@@ -1,0 +1,6 @@
+{
+  "name": "RutaSV Offline",
+  "description": "Mapa vectorial y rutas GPS sin internet para todo El Salvador, con soporte para coordenadas y enlaces.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

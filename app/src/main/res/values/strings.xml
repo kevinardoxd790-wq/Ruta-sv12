@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">RutaSV Offline</string>
+    <string name="offline_badge">100% SIN INTERNET • EL SALVADOR</string>
+    <string name="search_hint">Pegar ubicación, link o buscar lugar…</string>
+    <string name="preparing_map_title">Preparando mapa de El Salvador</string>
+    <string name="preparing_map_subtitle">Extrayendo calles, cantones y red de rutas offline a la memoria interna…</string>
+    <string name="mode_car">Carro / Moto</string>
+    <string name="mode_foot">A pie</string>
+    <string name="btn_calculate_route">Calcular ruta</string>
+    <string name="btn_start_navigation">Iniciar guía</string>
+    <string name="btn_stop_navigation">Finalizar guía</string>
+    <string name="btn_recalculate">Recalcular</string>
+    <string name="btn_my_location">Mi GPS</string>
+    <string name="btn_saved_places">Guardados</string>
+    <string name="btn_pick_on_map">Fijar punto en mapa</string>
+    <string name="btn_paste_clipboard">Pegar del portapapeles</string>
+    <string name="btn_save_place">Guardar</string>
+    <string name="btn_set_origin">Usar como inicio</string>
+    <string name="btn_set_destination">Ir aquí</string>
+    <string name="gps_waiting">Buscando señal GPS…</string>
+    <string name="gps_permission_needed">Activa el GPS para guiarte desde tu posición</string>
+    <string name="gps_grant_permission">Permitir GPS</string>
+    <string name="saved_places_title">Lugares Guardados</string>
+    <string name="saved_places_empty">Aún no tienes puntos guardados. Toca cualquier lugar del mapa o pega unas coordenadas para guardarlas sin internet.</string>
+</resources>
