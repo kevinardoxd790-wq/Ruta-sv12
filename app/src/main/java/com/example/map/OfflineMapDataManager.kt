@@ -74,39 +74,82 @@ class OfflineMapDataManager(private val context: Context) {
                     val offlineDir = File(context.filesDir, "offline_sv")
                     offlineDir.mkdirs()
 
-                    // 1. Copy Mapsforge vector map of El Salvador
+                    // 1. Download or copy Mapsforge vector map of El Salvador
                     val mapFile = File(offlineDir, "el-salvador.map")
                     if (!mapFile.exists() || mapFile.length() < 100_000L) {
                         onProgress(
                             OfflineInitState.Preparing(
-                                "Copiando mapa vectorial de El Salvador…",
-                                0.15f
+                                "Descargando mapa offline de El Salvador…",
+                                0.10f
                             )
                         )
                         val tmpMap = File(offlineDir, "el-salvador.map.tmp")
-                        context.assets.open("el-salvador.map").use { input ->
-                            FileOutputStream(tmpMap).use { output ->
-                                input.copyTo(output, bufferSize = 65536)
+                        try {
+                            downloadFileWithProgress(
+                                "https://raw.githubusercontent.com/mabeldandoval/rutasv/main/app/src/main/assets/el-salvador.map",
+                                tmpMap
+                            ) { pct ->
+                                onProgress(
+                                    OfflineInitState.Preparing(
+                                        "Descargando mapa (${(pct * 100).toInt()}%)...",
+                                        0.10f + pct * 0.30f
+                                    )
+                                )
+                            }
+                        } catch (e: Exception) {
+                            context.assets.open("el-salvador.map").use { input ->
+                                FileOutputStream(tmpMap).use { output ->
+                                    input.copyTo(output, bufferSize = 65536)
+                                }
                             }
                         }
                         if (mapFile.exists()) mapFile.delete()
                         tmpMap.renameTo(mapFile)
                     }
 
-                    // 2. Unzip GraphHopper routing graph for El Salvador
+                    // 2. Download or extract GraphHopper routing graph for El Salvador
                     val ghDir = File(offlineDir, "el-salvador-gh")
                     val markerFile = File(ghDir, ".sv_graph_ready_gh53")
+                    val ghZipFile = File(offlineDir, "el-salvador-gh53.zip")
                     if (!markerFile.exists()) {
                         onProgress(
                             OfflineInitState.Preparing(
+                                "Descargando red de carreteras y rutas…",
+                                0.40f
+                            )
+                        )
+                        if (!ghZipFile.exists() || ghZipFile.length() < 100_000L) {
+                            try {
+                                downloadFileWithProgress(
+                                    "https://raw.githubusercontent.com/mabeldandoval/rutasv/main/app/src/main/assets/el-salvador-gh53.zip",
+                                    ghZipFile
+                                ) { pct ->
+                                    onProgress(
+                                        OfflineInitState.Preparing(
+                                            "Descargando rutas (${(pct * 100).toInt()}%)...",
+                                            0.40f + pct * 0.35f
+                                        )
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                context.assets.open("el-salvador-gh53.zip").use { input ->
+                                    FileOutputStream(ghZipFile).use { output ->
+                                        input.copyTo(output, bufferSize = 65536)
+                                    }
+                                }
+                            }
+                        }
+
+                        onProgress(
+                            OfflineInitState.Preparing(
                                 "Descomprimiendo red de carreteras y caminos rurales…",
-                                0.45f
+                                0.78f
                             )
                         )
                         if (ghDir.exists()) ghDir.deleteRecursively()
                         ghDir.mkdirs()
 
-                        ZipInputStream(BufferedInputStream(context.assets.open("el-salvador-gh53.zip"))).use { zis ->
+                        ZipInputStream(BufferedInputStream(ghZipFile.inputStream())).use { zis ->
                             val buf = ByteArray(65536)
                             var entry = zis.nextEntry
                             while (entry != null) {
@@ -281,5 +324,30 @@ class OfflineMapDataManager(private val context: Context) {
             Instruction.FINISH -> "Llegaste al punto más cercano al destino"
             else -> if (street != null) "Sigue$onStreet" else "Continúa por la vía"
         }
+    }
+
+    private fun downloadFileWithProgress(urlString: String, outputFile: File, onProgress: (Float) -> Unit) {
+        val url = java.net.URL(urlString)
+        val connection = url.openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 15000
+        connection.readTimeout = 30000
+        connection.connect()
+        val length = connection.contentLength.toLong()
+        BufferedInputStream(connection.inputStream).use { input ->
+            FileOutputStream(outputFile).use { output ->
+                val data = ByteArray(8192)
+                var total: Long = 0
+                var count: Int
+                while (input.read(data).also { count = it } != -1) {
+                    total += count.toLong()
+                    output.write(data, 0, count)
+                    if (length > 0) {
+                        onProgress(total.toFloat() / length.toFloat())
+                    }
+                }
+                output.flush()
+            }
+        }
+        connection.disconnect()
     }
 }

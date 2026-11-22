@@ -99,24 +99,24 @@ fun MapsforgeMapView(
     var userRotationOffset by remember { mutableFloatStateOf(0f) }
     val overlayLayers = remember { mutableListOf<Layer>() }
 
-    // Calibrated Waze first-person 3D perspective:
-    val targetTilt = if (is3dPerspective) 30f else 0f
-    val targetScaleX = if (is3dPerspective) 1.55f else 1.0f
-    val targetScaleY = if (is3dPerspective) 2.25f else 1.0f
+    // Calibrated Waze first-person 3D perspective (smooth, no white gaps):
+    val targetTilt = if (is3dPerspective) 22f else 0f
+    val targetScaleX = if (is3dPerspective) 1.35f else 1.0f
+    val targetScaleY = if (is3dPerspective) 1.45f else 1.0f
 
     val animatedTilt by animateFloatAsState(
         targetValue = targetTilt,
-        animationSpec = tween(durationMillis = 420),
+        animationSpec = tween(durationMillis = 600),
         label = "map_tilt_3d"
     )
     val animatedScaleX by animateFloatAsState(
         targetValue = targetScaleX,
-        animationSpec = tween(durationMillis = 420),
+        animationSpec = tween(durationMillis = 600),
         label = "map_scale_x"
     )
     val animatedScaleY by animateFloatAsState(
         targetValue = targetScaleY,
-        animationSpec = tween(durationMillis = 420),
+        animationSpec = tween(durationMillis = 600),
         label = "map_scale_y"
     )
 
@@ -352,8 +352,8 @@ fun MapsforgeMapView(
     ) {
         val viewportHeightPx = with(density) { maxHeight.toPx() }
         val animatedTranslationY by animateFloatAsState(
-            targetValue = if (is3dPerspective) viewportHeightPx * 0.14f else 0f,
-            animationSpec = tween(durationMillis = 420),
+            targetValue = if (is3dPerspective) viewportHeightPx * 0.12f else 0f,
+            animationSpec = tween(durationMillis = 600),
             label = "map_translate_y_3d"
         )
 
@@ -367,7 +367,7 @@ fun MapsforgeMapView(
                     rotationX = animatedTilt
                     scaleX = animatedScaleX
                     scaleY = animatedScaleY
-                    cameraDistance = 28f
+                    cameraDistance = 36f
                 },
             factory = { ctx ->
                 Parameters.SQUARE_FRAME_BUFFER = true
