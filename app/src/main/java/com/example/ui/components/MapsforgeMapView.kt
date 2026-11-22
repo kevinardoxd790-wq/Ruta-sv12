@@ -412,8 +412,8 @@ fun MapsforgeMapView(
                     ctx,
                     "sv_tile_cache",
                     mapView.model.displayModel.tileSize,
-                    1.0f,
-                    mapView.model.frameBufferModel.overdrawFactor
+                    2.5f,
+                    mapView.model.frameBufferModel.overdrawFactor * 1.5
                 )
 
                 val mapDataStore = MapFile(mapFile)
