@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -27,40 +28,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddLocationAlt
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Directions
-import androidx.compose.material.icons.filled.DirectionsCar
-import androidx.compose.material.icons.filled.Flag
-import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Navigation
-import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.RoundaboutRight
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Straight
-import androidx.compose.material.icons.filled.TurnLeft
-import androidx.compose.material.icons.filled.TurnRight
-import androidx.compose.material.icons.filled.TurnSharpLeft
-import androidx.compose.material.icons.filled.TurnSharpRight
-import androidx.compose.material.icons.filled.TurnSlightLeft
-import androidx.compose.material.icons.filled.TurnSlightRight
-import androidx.compose.material.icons.filled.UTurnLeft
-import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -68,7 +43,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,7 +55,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -101,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.data.ElSalvadorPlaces
 import com.example.data.local.SavedPlaceEntity
 import com.example.map.OfflineInitState
@@ -111,6 +85,7 @@ import com.example.ui.MainViewModel
 import com.example.ui.components.LocationInputSheet
 import com.example.ui.components.MapsforgeMapView
 import com.example.ui.components.SavePlaceDialog
+import com.example.ui.theme.AppIcons
 import com.example.util.CoordinateParser
 import com.graphhopper.util.Instruction
 import kotlin.math.roundToInt
@@ -124,6 +99,7 @@ fun MapScreen(
     onOpenSavedPlaces: () -> Unit,
     onShowSearchSheet: (Boolean) -> Unit,
     onShowMenuSheet: (Boolean) -> Unit,
+    onShowRouteOptionsSheet: (Boolean) -> Unit,
     onShowStepsSheet: (Boolean) -> Unit,
     onShowSaveDialog: (Boolean) -> Unit,
     onToggleNightMode: () -> Unit,
@@ -137,8 +113,6 @@ fun MapScreen(
     onSelectProfile: (RouteProfile) -> Unit,
     onToggleProfile: () -> Unit,
     onCalculateRoute: () -> Unit,
-    onStartNavigation: () -> Unit,
-    onStopNavigation: () -> Unit,
     onClearRoute: () -> Unit,
     onSavePlace: (String, String, String) -> Unit,
     onOpenSavedPlace: (SavedPlaceEntity) -> Unit,
@@ -182,6 +156,9 @@ fun MapScreen(
         }
     }
 
+    val isRouteActive = uiState.destination != null && !uiState.isCrosshairMode
+    val is3dActive = isRouteActive && uiState.routeResult != null
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { _ ->
@@ -191,6 +168,7 @@ fun MapScreen(
                     MapsforgeMapView(
                         mapFile = init.mapFile,
                         isNightMode = uiState.isNightMode,
+                        is3dPerspective = is3dActive,
                         cursorPosition = uiState.cursorPosition,
                         isFollowingGps = uiState.isFollowingGps,
                         isNavigating = uiState.isNavigating,
@@ -237,15 +215,12 @@ fun MapScreen(
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        border = androidx.compose.foundation.BorderStroke(
-                            2.5.dp,
-                            MaterialTheme.colorScheme.primary
-                        ),
+                        border = BorderStroke(2.5.dp, MaterialTheme.colorScheme.primary),
                         modifier = Modifier.size(48.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                Icons.Default.GpsFixed,
+                                AppIcons.GpsFixed,
                                 contentDescription = "Mira de punto",
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(26.dp)
@@ -255,24 +230,21 @@ fun MapScreen(
                 }
             }
 
-            // TOP OVERLAY: Either Waze-style Navigation Banner OR Floating Hamburger Menu + GPS Pill
-            if (uiState.isNavigating && uiState.routeResult != null) {
-                val steps = uiState.routeResult.steps
-                val activeStep = steps.getOrNull(uiState.activeStepIndex) ?: steps.lastOrNull()
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    WazeNavigationTopBanner(
-                        step = activeStep,
-                        distanceToTurnMeters = uiState.distanceToNextTurnMeters,
-                        onStop = onStopNavigation
-                    )
-                }
+            // TOP CHROME: Edge-to-edge Black Waze Banner when Route Active OR Floating Menu + GPS Pill
+            if (isRouteActive) {
+                val route = uiState.routeResult
+                val activeStep = route?.steps?.getOrNull(uiState.activeStepIndex)
+                    ?: route?.steps?.lastOrNull()
+                WazeBlackTopManeuverBar(
+                    step = activeStep,
+                    distanceToTurnMeters = uiState.distanceToNextTurnMeters,
+                    destinationLabel = uiState.destination?.label.orEmpty(),
+                    isRouting = uiState.isRouting,
+                    onOpenSteps = {
+                        if (route != null) onShowStepsSheet(true)
+                    },
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
             } else {
                 Row(
                     modifier = Modifier
@@ -283,7 +255,6 @@ fun MapScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Top-left Waze floating menu button
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         tonalElevation = 6.dp,
@@ -305,7 +276,6 @@ fun MapScreen(
                         }
                     }
 
-                    // Top-right compact GPS + Offline badge
                     Surface(
                         shape = RoundedCornerShape(50),
                         tonalElevation = 4.dp,
@@ -327,9 +297,9 @@ fun MapScreen(
                         ) {
                             Icon(
                                 imageVector = when {
-                                    uiState.gpsPosition != null -> Icons.Default.GpsFixed
-                                    !uiState.hasLocationPermission -> Icons.Default.GpsOff
-                                    else -> Icons.Default.OfflinePin
+                                    uiState.gpsPosition != null -> AppIcons.GpsFixed
+                                    !uiState.hasLocationPermission -> AppIcons.GpsOff
+                                    else -> AppIcons.OfflinePin
                                 },
                                 contentDescription = null,
                                 tint = when {
@@ -356,171 +326,128 @@ fun MapScreen(
                 }
             }
 
-            // RIGHT COMPACT ZOOM & DAY/NIGHT CONTROLS (when map is ready)
+            // RIGHT FLOATING MINI CONTROLS (only 2 clean circles in route mode, or zoom + night in browse mode)
             if (uiState.initState is OfflineInitState.Ready) {
                 Column(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                        .align(Alignment.TopEnd)
+                        .statusBarsPadding()
+                        .padding(
+                            top = if (isRouteActive) 104.dp else 72.dp,
+                            end = 14.dp
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        tonalElevation = 6.dp,
-                        shadowElevation = 5.dp,
-                        color = if (uiState.isNightMode) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surface
-                    ) {
-                        IconButton(
-                            onClick = onToggleNightMode,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("night_mode_button")
+                    if (isRouteActive) {
+                        Surface(
+                            shape = CircleShape,
+                            tonalElevation = 6.dp,
+                            shadowElevation = 6.dp,
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.size(48.dp)
                         ) {
-                            Icon(
-                                imageVector = if (uiState.isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                contentDescription = "Modo día o noche",
-                                tint = if (uiState.isNightMode) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        tonalElevation = 6.dp,
-                        shadowElevation = 5.dp,
-                        color = MaterialTheme.colorScheme.surface
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             IconButton(
-                                onClick = {
-                                    zoomDelta = 1
-                                    zoomCommandNonce++
-                                },
+                                onClick = onToggleNightMode,
                                 modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("zoom_in_button")
+                                    .fillMaxSize()
+                                    .testTag("night_mode_button")
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = "Acercar mapa")
+                                Icon(
+                                    imageVector = if (uiState.isNightMode) AppIcons.LightMode else AppIcons.DarkMode,
+                                    contentDescription = "Modo día o noche",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
                             }
-                            HorizontalDivider(modifier = Modifier.width(30.dp))
+                        }
+
+                        if (!uiState.isFollowingGps) {
+                            Surface(
+                                shape = CircleShape,
+                                tonalElevation = 6.dp,
+                                shadowElevation = 6.dp,
+                                color = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onCenterMyLocation,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("recenter_route_button")
+                                ) {
+                                    Icon(
+                                        AppIcons.MyLocation,
+                                        contentDescription = "Centrar en mi vehículo",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = CircleShape,
+                            tonalElevation = 6.dp,
+                            shadowElevation = 5.dp,
+                            color = if (uiState.isNightMode) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surface
+                        ) {
                             IconButton(
-                                onClick = {
-                                    zoomDelta = -1
-                                    zoomCommandNonce++
-                                },
+                                onClick = onToggleNightMode,
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
-                                    .testTag("zoom_out_button")
+                                    .testTag("night_mode_button")
                             ) {
-                                Icon(Icons.Default.Remove, contentDescription = "Alejar mapa")
+                                Icon(
+                                    imageVector = if (uiState.isNightMode) AppIcons.LightMode else AppIcons.DarkMode,
+                                    contentDescription = "Modo día o noche",
+                                    tint = if (uiState.isNightMode) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            tonalElevation = 6.dp,
+                            shadowElevation = 5.dp,
+                            color = MaterialTheme.colorScheme.surface
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                IconButton(
+                                    onClick = {
+                                        zoomDelta = 1
+                                        zoomCommandNonce++
+                                    },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("zoom_in_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = "Acercar mapa")
+                                }
+                                HorizontalDivider(modifier = Modifier.width(30.dp))
+                                IconButton(
+                                    onClick = {
+                                        zoomDelta = -1
+                                        zoomCommandNonce++
+                                    },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("zoom_out_button")
+                                ) {
+                                    Icon(AppIcons.Remove, contentDescription = "Alejar mapa")
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // BOTTOM SECTION: Floating Waze controls row + Bottom Sheet
+            // BOTTOM SECTION
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Floating Waze-style row above the bottom sheet: Left Recenter + Center Blue Vehicle Pill
-                if (uiState.initState is OfflineInitState.Ready && !uiState.isCrosshairMode) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = 600.dp)
-                            .padding(horizontal = 16.dp, vertical = 10.dp)
-                    ) {
-                        // Left circular GPS/recenter button (matches Waze bottom-left button)
-                        Surface(
-                            shape = CircleShape,
-                            tonalElevation = 8.dp,
-                            shadowElevation = 6.dp,
-                            color = MaterialTheme.colorScheme.surface,
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .size(50.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    if (!uiState.hasLocationPermission) {
-                                        locationPermissionLauncher.launch(
-                                            arrayOf(
-                                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                                Manifest.permission.ACCESS_COARSE_LOCATION
-                                            )
-                                        )
-                                    } else {
-                                        onCenterMyLocation()
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .testTag("my_location_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (uiState.isFollowingGps) Icons.Default.GpsFixed else Icons.Default.MyLocation,
-                                    contentDescription = "Centrar en mi ubicación",
-                                    tint = if (uiState.isFollowingGps && uiState.gpsPosition != null) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    }
-                                )
-                            }
-                        }
-
-                        // Center Waze-blue "Vehículo ▾" pill
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            shadowElevation = 6.dp,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .clip(RoundedCornerShape(50))
-                                .clickable(onClick = onToggleProfile)
-                                .minimumInteractiveComponentSize()
-                                .testTag("waze_vehicle_pill")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (uiState.selectedProfile == RouteProfile.CAR) {
-                                        Icons.Default.DirectionsCar
-                                    } else {
-                                        Icons.AutoMirrored.Filled.DirectionsWalk
-                                    },
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = if (uiState.selectedProfile == RouteProfile.CAR) "Vehículo" else "A pie",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimary
-                                )
-                                Spacer(Modifier.width(2.dp))
-                                Icon(
-                                    Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Cambiar modo",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Bottom Sheet Content
                 when {
                     uiState.isCrosshairMode -> {
                         Box(
@@ -540,23 +467,200 @@ fun MapScreen(
                         }
                     }
 
-                    uiState.destination != null -> {
-                        WazeRouteBottomSheet(
+                    isRouteActive -> {
+                        // Waze Drive HUD row above compact bottom bar: Speedometer (left) + Street pill (center) + Exit (right)
+                        val speedKmh = ((uiState.gpsPosition?.speedMps ?: 0f) * 3.6f).roundToInt().coerceAtLeast(0)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 600.dp)
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            // Speedometer circle (bottom-left like Waze screenshot)
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF2B313B),
+                                border = BorderStroke(2.5.dp, Color(0xFF475569)),
+                                shadowElevation = 6.dp,
+                                modifier = Modifier.size(60.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = speedKmh.toString(),
+                                        color = Color.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        lineHeight = 18.sp
+                                    )
+                                    Text(
+                                        text = "km/h",
+                                        color = Color(0xFFCBD5E1),
+                                        fontSize = 10.sp,
+                                        lineHeight = 11.sp
+                                    )
+                                }
+                            }
+
+                            // Center floating current street pill (like "15 Calle Poniente" in screenshot)
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 6.dp,
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .padding(horizontal = 10.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable {
+                                        if (uiState.routeError != null) {
+                                            onUseSanSalvadorOrigin()
+                                        } else {
+                                            onToggleProfile()
+                                        }
+                                    }
+                            ) {
+                                Text(
+                                    text = when {
+                                        uiState.routeError != null -> "Sin GPS • Toca: desde San Salvador"
+                                        !uiState.currentRoadName.isNullOrBlank() -> uiState.currentRoadName
+                                        else -> uiState.destination?.label ?: "Ruta Offline"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                )
+                            }
+
+                            // Clean circular Close/Exit route button on bottom-right
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFFFACC15),
+                                shadowElevation = 6.dp,
+                                modifier = Modifier.size(54.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onClearRoute,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("clear_destination_button")
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Finalizar ruta",
+                                        tint = Color(0xFF1A2230),
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Compact Waze ETA Bottom Bar (identical layout to screenshot: Search | ETA & time/km | Options)
+                        WazeCompactDriveBottomBar(
                             uiState = uiState,
-                            onSelectProfile = onSelectProfile,
-                            onCalculateRoute = onCalculateRoute,
-                            onStartNavigation = onStartNavigation,
-                            onStopNavigation = onStopNavigation,
-                            onShowSteps = { onShowStepsSheet(true) },
-                            onSavePlace = { onShowSaveDialog(true) },
-                            onUseGpsOrigin = onUseGpsOrigin,
+                            onOpenSearch = { onShowSearchSheet(true) },
+                            onOpenRouteOptions = { onShowRouteOptionsSheet(true) },
                             onUseSanSalvadorOrigin = onUseSanSalvadorOrigin,
-                            onPickOriginOnMap = onToggleCrosshairMode,
-                            onClear = onClearRoute
+                            onPickOriginOnMap = onToggleCrosshairMode
                         )
                     }
 
                     uiState.initState is OfflineInitState.Ready -> {
+                        // Browse/Idle state: Floating Recenter + Blue Vehículo pill + Waze ¿Adónde vas? sheet
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 600.dp)
+                                .padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                tonalElevation = 8.dp,
+                                shadowElevation = 6.dp,
+                                color = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .size(50.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (!uiState.hasLocationPermission) {
+                                            locationPermissionLauncher.launch(
+                                                arrayOf(
+                                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                                )
+                                            )
+                                        } else {
+                                            onCenterMyLocation()
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("my_location_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (uiState.isFollowingGps) AppIcons.GpsFixed else AppIcons.MyLocation,
+                                        contentDescription = "Centrar en mi ubicación",
+                                        tint = if (uiState.isFollowingGps && uiState.gpsPosition != null) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                shadowElevation = 6.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable(onClick = onToggleProfile)
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("waze_vehicle_pill")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (uiState.selectedProfile == RouteProfile.CAR) {
+                                            AppIcons.DirectionsCar
+                                        } else {
+                                            AppIcons.DirectionsWalk
+                                        },
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = if (uiState.selectedProfile == RouteProfile.CAR) "Vehículo" else "A pie",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                    Spacer(Modifier.width(2.dp))
+                                    Icon(
+                                        Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Cambiar modo",
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
                         WazeSearchBottomSheet(
                             homePlace = homePlace,
                             workPlace = workPlace,
@@ -616,6 +720,27 @@ fun MapScreen(
             onCenterGps = {
                 onShowMenuSheet(false)
                 onCenterMyLocation()
+            }
+        )
+    }
+
+    if (uiState.showRouteOptionsSheet && uiState.destination != null) {
+        WazeRouteOptionsBottomSheet(
+            uiState = uiState,
+            onDismiss = { onShowRouteOptionsSheet(false) },
+            onSelectProfile = { profile ->
+                onShowRouteOptionsSheet(false)
+                onSelectProfile(profile)
+            },
+            onShowSteps = { onShowStepsSheet(true) },
+            onSavePlace = { onShowSaveDialog(true) },
+            onRecalculate = {
+                onShowRouteOptionsSheet(false)
+                onCalculateRoute()
+            },
+            onClearRoute = {
+                onShowRouteOptionsSheet(false)
+                onClearRoute()
             }
         )
     }
@@ -715,6 +840,303 @@ fun MapScreen(
 }
 
 @Composable
+private fun WazeBlackTopManeuverBar(
+    step: RouteStep?,
+    distanceToTurnMeters: Double,
+    destinationLabel: String,
+    isRouting: Boolean,
+    onOpenSteps: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xFF000000),
+        shadowElevation = 8.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenSteps)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = signToIcon(step?.sign ?: Instruction.CONTINUE_ON_STREET),
+                contentDescription = "Siguiente giro",
+                tint = Color.White,
+                modifier = Modifier.size(48.dp)
+            )
+            Spacer(Modifier.width(18.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isRouting) "Calculando…" else MainViewModel.formatDistance(distanceToTurnMeters),
+                    color = Color.White,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Text(
+                    text = step?.streetName?.takeIf { it.isNotBlank() }
+                        ?: step?.instructionText
+                        ?: destinationLabel,
+                    color = Color(0xFF29B6F6),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WazeCompactDriveBottomBar(
+    uiState: MainUiState,
+    onOpenSearch: () -> Unit,
+    onOpenRouteOptions: () -> Unit,
+    onUseSanSalvadorOrigin: () -> Unit,
+    onPickOriginOnMap: () -> Unit
+) {
+    val route = uiState.routeResult
+    val shownDist = if (uiState.remainingDistanceMeters > 0) {
+        uiState.remainingDistanceMeters
+    } else {
+        route?.totalDistanceMeters ?: 0.0
+    }
+    val shownTime = if (uiState.remainingTimeMillis > 0) {
+        uiState.remainingTimeMillis
+    } else {
+        route?.totalTimeMillis ?: 0L
+    }
+
+    Surface(
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 10.dp,
+        shadowElevation = 14.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 600.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp)
+                .padding(top = 8.dp, bottom = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(40.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.outline)
+            )
+            Spacer(Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Left circular Search button (matches Waze bottom-left magnifying glass)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    IconButton(
+                        onClick = onOpenSearch,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("drive_search_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = "Buscar otro destino",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                // Center compact ETA + duration & distance
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp)
+                        .clickable(enabled = route != null) { onOpenRouteOptions() },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    when {
+                        uiState.isRouting -> {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Trazando ruta…",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        uiState.routeError != null -> {
+                            Text(
+                                text = "Esperando origen",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilledTonalButton(
+                                    onClick = onUseSanSalvadorOrigin,
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("Desde San Salvador", fontSize = 12.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = onPickOriginOnMap,
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("Fijar", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        route != null -> {
+                            Text(
+                                text = MainViewModel.formatClockEta(shownTime),
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${MainViewModel.formatDuration(shownTime)}  •  ${MainViewModel.formatDistance(shownDist)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Right circular Route Options button (matches Waze bottom-right split-route icon)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    IconButton(
+                        onClick = onOpenRouteOptions,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("drive_route_options_button")
+                    ) {
+                        Icon(
+                            AppIcons.AltRoute,
+                            contentDescription = "Opciones de ruta",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WazeRouteOptionsBottomSheet(
+    uiState: MainUiState,
+    onDismiss: () -> Unit,
+    onSelectProfile: (RouteProfile) -> Unit,
+    onShowSteps: () -> Unit,
+    onSavePlace: () -> Unit,
+    onRecalculate: () -> Unit,
+    onClearRoute: () -> Unit
+) {
+    val dest = uiState.destination ?: return
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = dest.label,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = CoordinateParser.formatCoordinates(dest.latitude, dest.longitude),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+
+            MenuActionRow(
+                icon = Icons.AutoMirrored.Filled.List,
+                title = "Ver pasos (${uiState.routeResult?.steps?.size ?: 0})",
+                subtitle = "Lista completa de giros y calles",
+                onClick = onShowSteps
+            )
+            MenuActionRow(
+                icon = AppIcons.BookmarkBorder,
+                title = "Guardar lugar offline",
+                subtitle = "Guarda como Casa, Trabajo o punto favorito",
+                onClick = onSavePlace
+            )
+            MenuActionRow(
+                icon = if (uiState.selectedProfile == RouteProfile.CAR) {
+                    AppIcons.DirectionsWalk
+                } else {
+                    AppIcons.DirectionsCar
+                },
+                title = if (uiState.selectedProfile == RouteProfile.CAR) {
+                    "Cambiar a ruta A pie"
+                } else {
+                    "Cambiar a ruta en Carro / Moto"
+                },
+                subtitle = "Modo actual: ${uiState.selectedProfile.label}",
+                onClick = {
+                    val next = if (uiState.selectedProfile == RouteProfile.CAR) {
+                        RouteProfile.FOOT
+                    } else {
+                        RouteProfile.CAR
+                    }
+                    onSelectProfile(next)
+                }
+            )
+            MenuActionRow(
+                icon = Icons.Default.Refresh,
+                title = "Recalcular ruta",
+                subtitle = "Volver a trazar desde tu posición actual",
+                onClick = onRecalculate
+            )
+
+            Spacer(Modifier.height(4.dp))
+            Button(
+                onClick = onClearRoute,
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+            ) {
+                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Finalizar ruta")
+            }
+        }
+    }
+}
+
+@Composable
 private fun WazeSearchBottomSheet(
     homePlace: SavedPlaceEntity?,
     workPlace: SavedPlaceEntity?,
@@ -741,7 +1163,6 @@ private fun WazeSearchBottomSheet(
                 .padding(top = 10.dp, bottom = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Drag handle pill like Waze
             Box(
                 modifier = Modifier
                     .width(42.dp)
@@ -751,7 +1172,6 @@ private fun WazeSearchBottomSheet(
             )
             Spacer(Modifier.height(12.dp))
 
-            // Big rounded "¿Adónde vas?" pill bar
             Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -788,7 +1208,7 @@ private fun WazeSearchBottomSheet(
                             .testTag("quick_paste_button")
                     ) {
                         Icon(
-                            Icons.Default.ContentPaste,
+                            AppIcons.ContentPaste,
                             contentDescription = "Pegar enlace de Google Maps o coordenadas",
                             tint = MaterialTheme.colorScheme.primary
                         )
@@ -798,7 +1218,6 @@ private fun WazeSearchBottomSheet(
 
             Spacer(Modifier.height(12.dp))
 
-            // Horizontal shortcut cards like Waze's Casa / Trabajo / Guardados row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -812,26 +1231,26 @@ private fun WazeSearchBottomSheet(
                     onClick = { onShortcutPlaceClick(homePlace) }
                 )
                 WazeShortcutCard(
-                    icon = Icons.Default.Work,
+                    icon = AppIcons.Work,
                     title = "Trabajo",
                     subtitle = if (workPlace != null) "Ir ahora" else "Definir",
                     onClick = { onShortcutPlaceClick(workPlace) }
                 )
                 WazeShortcutCard(
-                    icon = Icons.Default.ContentPaste,
+                    icon = AppIcons.ContentPaste,
                     title = "Link Maps",
                     subtitle = "Pegar enlace",
                     highlighted = true,
                     onClick = onPasteLinkClick
                 )
                 WazeShortcutCard(
-                    icon = Icons.Default.AddLocationAlt,
+                    icon = AppIcons.AddLocationAlt,
                     title = "Fijar pin",
                     subtitle = "En el mapa",
                     onClick = onOpenCrosshair
                 )
                 WazeShortcutCard(
-                    icon = Icons.Default.Bookmark,
+                    icon = AppIcons.Bookmark,
                     title = "Guardados",
                     subtitle = "Mis rutas",
                     onClick = onOpenSaved
@@ -889,336 +1308,6 @@ private fun WazeShortcutCard(
     }
 }
 
-@Composable
-private fun WazeNavigationTopBanner(
-    step: RouteStep?,
-    distanceToTurnMeters: Double,
-    onStop: () -> Unit
-) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1A2230)
-        ),
-        shape = RoundedCornerShape(22.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 600.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .background(
-                        color = Color(0xFF0099FF),
-                        shape = RoundedCornerShape(14.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = signToIcon(step?.sign ?: Instruction.CONTINUE_ON_STREET),
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = MainViewModel.formatDistance(distanceToTurnMeters),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Text(
-                    text = step?.instructionText ?: "Sigue la ruta trazada",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.88f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            IconButton(
-                onClick = onStop,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("stop_navigation_banner_button")
-            ) {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = "Detener navegación",
-                    tint = Color.White
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun WazeRouteBottomSheet(
-    uiState: MainUiState,
-    onSelectProfile: (RouteProfile) -> Unit,
-    onCalculateRoute: () -> Unit,
-    onStartNavigation: () -> Unit,
-    onStopNavigation: () -> Unit,
-    onShowSteps: () -> Unit,
-    onSavePlace: () -> Unit,
-    onUseGpsOrigin: () -> Unit,
-    onUseSanSalvadorOrigin: () -> Unit,
-    onPickOriginOnMap: () -> Unit,
-    onClear: () -> Unit
-) {
-    val dest = uiState.destination ?: return
-    val route = uiState.routeResult
-    val shownDist = if (uiState.isNavigating && uiState.remainingDistanceMeters > 0) {
-        uiState.remainingDistanceMeters
-    } else {
-        route?.totalDistanceMeters ?: 0.0
-    }
-    val shownTime = if (uiState.isNavigating && uiState.remainingTimeMillis > 0) {
-        uiState.remainingTimeMillis
-    } else {
-        route?.totalTimeMillis ?: 0L
-    }
-
-    Surface(
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 10.dp,
-        shadowElevation = 14.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 600.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp)
-                .padding(top = 10.dp, bottom = 16.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .width(42.dp)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(MaterialTheme.colorScheme.outline)
-            )
-            Spacer(Modifier.height(10.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = dest.label,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (!dest.nearestRoad.isNullOrBlank()) {
-                        Text(
-                            text = "Cerca de: ${dest.nearestRoad}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Text(
-                        text = CoordinateParser.formatCoordinates(dest.latitude, dest.longitude),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(
-                    onClick = onSavePlace,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("save_destination_button")
-                ) {
-                    Icon(
-                        Icons.Default.BookmarkBorder,
-                        contentDescription = "Guardar punto",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-                IconButton(
-                    onClick = onClear,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("clear_destination_button")
-                ) {
-                    Icon(Icons.Default.Close, contentDescription = "Cerrar destino")
-                }
-            }
-
-            if (!uiState.isNavigating) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilterChip(
-                        selected = uiState.selectedProfile == RouteProfile.CAR,
-                        onClick = { onSelectProfile(RouteProfile.CAR) },
-                        label = { Text("Carro / Moto") },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.DirectionsCar,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        },
-                        modifier = Modifier.testTag("profile_car_chip")
-                    )
-                    FilterChip(
-                        selected = uiState.selectedProfile == RouteProfile.FOOT,
-                        onClick = { onSelectProfile(RouteProfile.FOOT) },
-                        label = { Text("A pie") },
-                        leadingIcon = {
-                            Icon(
-                                Icons.AutoMirrored.Filled.DirectionsWalk,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        },
-                        modifier = Modifier.testTag("profile_foot_chip")
-                    )
-                    Spacer(Modifier.weight(1f))
-                    if (uiState.manualOrigin != null) {
-                        TextButton(onClick = onUseGpsOrigin) {
-                            Text("Usar GPS", maxLines = 1)
-                        }
-                    }
-                }
-            }
-
-            if (uiState.isRouting) {
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
-                    Text("Trazando ruta offline…", style = MaterialTheme.typography.bodyMedium)
-                }
-            } else if (uiState.routeError != null) {
-                Spacer(Modifier.height(8.dp))
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = uiState.routeError,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onPickOriginOnMap) {
-                                Text("Fijar inicio")
-                            }
-                            FilledTonalButton(onClick = onUseSanSalvadorOrigin) {
-                                Text("Desde San Salvador")
-                            }
-                        }
-                    }
-                }
-            } else if (route != null) {
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(
-                            text = "${MainViewModel.formatDuration(shownTime)}  •  ${MainViewModel.formatDistance(shownDist)}",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        if (route.offRoadTailMeters > 25.0) {
-                            Text(
-                                text = "Últimos ${route.offRoadTailMeters.roundToInt()} m fuera de vía hasta el pin",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-                    IconButton(onClick = onCalculateRoute) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Recalcular ruta")
-                    }
-                }
-
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (uiState.isNavigating) {
-                        Button(
-                            onClick = onStopNavigation,
-                            shape = RoundedCornerShape(50),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .minimumInteractiveComponentSize()
-                                .testTag("stop_navigation_button")
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Salir")
-                        }
-                    } else {
-                        Button(
-                            onClick = onStartNavigation,
-                            shape = RoundedCornerShape(50),
-                            modifier = Modifier
-                                .weight(1f)
-                                .minimumInteractiveComponentSize()
-                                .testTag("start_navigation_button")
-                        ) {
-                            Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Ir ahora")
-                        }
-                    }
-
-                    FilledTonalButton(
-                        onClick = onShowSteps,
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("show_steps_button")
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Pasos (${route.steps.size})")
-                    }
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WazeMenuBottomSheet(
@@ -1255,25 +1344,25 @@ private fun WazeMenuBottomSheet(
             Spacer(Modifier.height(6.dp))
 
             MenuActionRow(
-                icon = Icons.Default.Bookmark,
+                icon = AppIcons.Bookmark,
                 title = "Lugares guardados ($savedCount)",
                 subtitle = "Casa, trabajo, fincas y destinos offline",
                 onClick = onOpenSaved
             )
             MenuActionRow(
-                icon = Icons.Default.AddLocationAlt,
+                icon = AppIcons.AddLocationAlt,
                 title = "Elegir punto en el mapa",
                 subtitle = "Marca cualquier terreno o camino rural con la mira",
                 onClick = onEnableCrosshair
             )
             MenuActionRow(
-                icon = Icons.Default.MyLocation,
+                icon = AppIcons.MyLocation,
                 title = "Centrar en mi GPS",
                 subtitle = "Seguir mi posición automáticamente en la ruta",
                 onClick = onCenterGps
             )
             MenuActionRow(
-                icon = if (isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                icon = if (isNightMode) AppIcons.LightMode else AppIcons.DarkMode,
                 title = if (isNightMode) "Cambiar a mapa de día" else "Cambiar a mapa nocturno",
                 subtitle = "Reduce el brillo para conducir de noche",
                 onClick = onToggleNightMode
@@ -1375,7 +1464,7 @@ private fun CrosshairPickerBar(
                         .minimumInteractiveComponentSize()
                         .testTag("crosshair_set_destination_button")
                 ) {
-                    Icon(Icons.Default.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Ir aquí")
                 }
@@ -1413,7 +1502,7 @@ private fun PreparingOfflineOverlay(stepLabel: String, progress: Float) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
-                    Icons.Default.OfflinePin,
+                    AppIcons.OfflinePin,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(52.dp)
@@ -1482,14 +1571,14 @@ private fun ErrorOfflineOverlay(message: String, onRetry: () -> Unit) {
 }
 
 private fun signToIcon(sign: Int): ImageVector = when (sign) {
-    Instruction.TURN_LEFT -> Icons.Default.TurnLeft
-    Instruction.TURN_SLIGHT_LEFT, Instruction.KEEP_LEFT -> Icons.Default.TurnSlightLeft
-    Instruction.TURN_SHARP_LEFT -> Icons.Default.TurnSharpLeft
-    Instruction.TURN_RIGHT -> Icons.Default.TurnRight
-    Instruction.TURN_SLIGHT_RIGHT, Instruction.KEEP_RIGHT -> Icons.Default.TurnSlightRight
-    Instruction.TURN_SHARP_RIGHT -> Icons.Default.TurnSharpRight
-    Instruction.USE_ROUNDABOUT, Instruction.LEAVE_ROUNDABOUT -> Icons.Default.RoundaboutRight
-    Instruction.U_TURN_LEFT, Instruction.U_TURN_RIGHT, Instruction.U_TURN_UNKNOWN -> Icons.Default.UTurnLeft
-    Instruction.FINISH -> Icons.Default.Flag
-    else -> Icons.Default.Straight
+    Instruction.TURN_LEFT -> AppIcons.TurnLeft
+    Instruction.TURN_SLIGHT_LEFT, Instruction.KEEP_LEFT -> AppIcons.TurnSlightLeft
+    Instruction.TURN_SHARP_LEFT -> AppIcons.TurnSharpLeft
+    Instruction.TURN_RIGHT -> AppIcons.TurnRight
+    Instruction.TURN_SLIGHT_RIGHT, Instruction.KEEP_RIGHT -> AppIcons.TurnSlightRight
+    Instruction.TURN_SHARP_RIGHT -> AppIcons.TurnSharpRight
+    Instruction.USE_ROUNDABOUT, Instruction.LEAVE_ROUNDABOUT -> AppIcons.RoundaboutRight
+    Instruction.U_TURN_LEFT, Instruction.U_TURN_RIGHT, Instruction.U_TURN_UNKNOWN -> AppIcons.UTurnLeft
+    Instruction.FINISH -> AppIcons.Flag
+    else -> AppIcons.Straight
 }

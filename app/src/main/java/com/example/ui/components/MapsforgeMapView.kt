@@ -13,6 +13,11 @@ import android.util.LruCache
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -22,7 +27,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.ElSalvadorPlaces
 import com.example.data.local.SavedPlaceEntity
@@ -33,6 +45,8 @@ import com.example.ui.SelectedPoint
 import org.mapsforge.core.graphics.Style
 import org.mapsforge.core.model.LatLong
 import org.mapsforge.core.model.Point
+import org.mapsforge.core.model.Rotation
+import org.mapsforge.core.util.Parameters
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
 import org.mapsforge.map.android.view.MapView
@@ -46,13 +60,17 @@ import org.mapsforge.map.reader.MapFile
 import org.mapsforge.map.rendertheme.internal.MapsforgeThemes
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
-@SuppressLint("ClickableViewAccessibility")
+@SuppressLint("ClickableViewAccessibility", "UnusedBoxWithConstraintsScope")
 @Composable
 fun MapsforgeMapView(
     mapFile: File,
     isNightMode: Boolean,
+    is3dPerspective: Boolean,
     cursorPosition: CursorDisplayPosition?,
     isFollowingGps: Boolean,
     isNavigating: Boolean,
@@ -69,6 +87,7 @@ fun MapsforgeMapView(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val latestLongPress by rememberUpdatedState(onLongPressCoordinate)
     val latestCenterChanged by rememberUpdatedState(onMapCenterChanged)
     val latestUserPan by rememberUpdatedState(onUserPanMap)
@@ -76,7 +95,32 @@ fun MapsforgeMapView(
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var tileRendererRef by remember { mutableStateOf<TileRendererLayer?>(null) }
     var tileCacheRef by remember { mutableStateOf<TileCache?>(null) }
+    var mapViewSize by remember { mutableStateOf(IntSize.Zero) }
     val overlayLayers = remember { mutableListOf<Layer>() }
+
+    // Calibrated Waze first-person 3D perspective:
+    // Mapsforge stays centered (centerY = 0.5f) so its square FrameBuffer covers 100% of every
+    // corner at any heading angle (0..360°), while Compose shifts the vehicle down to ~64% screen
+    // height and applies scaled perspective tilt whose projected edges stay strictly outside [0, W]x[0, H].
+    val targetTilt = if (is3dPerspective) 30f else 0f
+    val targetScaleX = if (is3dPerspective) 1.55f else 1.0f
+    val targetScaleY = if (is3dPerspective) 2.25f else 1.0f
+
+    val animatedTilt by animateFloatAsState(
+        targetValue = targetTilt,
+        animationSpec = tween(durationMillis = 420),
+        label = "map_tilt_3d"
+    )
+    val animatedScaleX by animateFloatAsState(
+        targetValue = targetScaleX,
+        animationSpec = tween(durationMillis = 420),
+        label = "map_scale_x"
+    )
+    val animatedScaleY by animateFloatAsState(
+        targetValue = targetScaleY,
+        animationSpec = tween(durationMillis = 420),
+        label = "map_scale_y"
+    )
 
     val markerBitmaps = remember(context) {
         MarkerBitmaps(
@@ -93,7 +137,7 @@ fun MapsforgeMapView(
     fun getRotatedVehicleBitmap(bearingDeg: Float): org.mapsforge.core.graphics.Bitmap {
         val normalized = (((bearingDeg % 360f) + 360f) % 360f)
         val quantized = ((normalized / 5f).roundToInt() * 5) % 360
-        return vehicleArrowCache.get(quantized) ?: createWazeArrowBitmap(
+        return vehicleArrowCache.get(quantized) ?: createWaze3dArrowBitmap(
             context = context,
             bearingDegrees = quantized.toFloat()
         ).also { vehicleArrowCache.put(quantized, it) }
@@ -130,6 +174,37 @@ fun MapsforgeMapView(
         }
     }
 
+    val fallbackRouteBearing = remember(routeResult) {
+        val pts = routeResult?.routePoints
+        if (pts != null && pts.size >= 2) {
+            computeBearingDegrees(pts[0].latitude, pts[0].longitude, pts[1].latitude, pts[1].longitude)
+        } else null
+    }
+
+    // Keep Mapsforge FrameBuffer centered (0.5f) so 360° heading-up rotation never clips diagonals
+    LaunchedEffect(
+        mapViewRef,
+        mapViewSize,
+        is3dPerspective,
+        isFollowingGps,
+        cursorPosition?.bearingDegrees,
+        fallbackRouteBearing
+    ) {
+        val mv = mapViewRef ?: return@LaunchedEffect
+        runCatching {
+            mv.model.mapViewPosition.setMapViewCenterY(0.5f)
+        }
+        val bearing = cursorPosition?.bearingDegrees ?: fallbackRouteBearing
+        if (is3dPerspective && bearing != null && mv.width > 0 && mv.height > 0) {
+            if (isFollowingGps || manualOrigin != null) {
+                mv.rotate(Rotation(-bearing, mv.width / 2f, mv.height / 2f))
+            }
+        } else if (!is3dPerspective) {
+            mv.rotate(Rotation.NULL_ROTATION)
+        }
+        mv.invalidate()
+    }
+
     // Explicit center/zoom requests (e.g., destination selected, recenter, start navigation)
     LaunchedEffect(focusTarget?.nonce) {
         val target = focusTarget ?: return@LaunchedEffect
@@ -145,12 +220,10 @@ fun MapsforgeMapView(
     LaunchedEffect(cursorPosition?.latitude, cursorPosition?.longitude, isFollowingGps, isNavigating) {
         val mv = mapViewRef ?: return@LaunchedEffect
         val pos = cursorPosition ?: return@LaunchedEffect
-        if (isFollowingGps || isNavigating) {
-            if (isFollowingGps) {
-                mv.model.mapViewPosition.animateTo(LatLong(pos.latitude, pos.longitude))
-                if (isNavigating && mv.model.mapViewPosition.zoomLevel < 16) {
-                    mv.model.mapViewPosition.setZoomLevel(17.toByte())
-                }
+        if (isFollowingGps) {
+            mv.model.mapViewPosition.animateTo(LatLong(pos.latitude, pos.longitude))
+            if (isNavigating && mv.model.mapViewPosition.zoomLevel < 16) {
+                mv.model.mapViewPosition.setZoomLevel(17.toByte())
             }
         }
     }
@@ -197,11 +270,11 @@ fun MapsforgeMapView(
             )
         }
 
-        // 2. Waze-style route polyline (indigo/violet with crisp dark border)
+        // 2. Waze signature purple route polyline with crisp dark purple outline
         if (routeResult != null && routeResult.routePoints.size >= 2) {
             val outlinePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = if (isNightMode) 0xFF0F172A.toInt() else 0xFF312E81.toInt()
-                strokeWidth = 20f
+                color = if (isNightMode) 0xFF0F172A.toInt() else 0xFF2E1065.toInt()
+                strokeWidth = 22f
                 setStyle(Style.STROKE)
             }
             addOverlay(Polyline(outlinePaint, AndroidGraphicFactory.INSTANCE).apply {
@@ -209,8 +282,8 @@ fun MapsforgeMapView(
             })
 
             val routePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = if (isNightMode) 0xFF38BDF8.toInt() else 0xFF6366F1.toInt()
-                strokeWidth = 12f
+                color = if (isNightMode) 0xFF38BDF8.toInt() else 0xFF7C2AE8.toInt()
+                strokeWidth = 14f
                 setStyle(Style.STROKE)
             }
             addOverlay(Polyline(routePaint, AndroidGraphicFactory.INSTANCE).apply {
@@ -221,7 +294,7 @@ fun MapsforgeMapView(
             if (routeResult.offRoadTailPoints.size >= 2) {
                 val tailPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
                     color = 0xFFF59E0B.toInt()
-                    strokeWidth = 8f
+                    strokeWidth = 9f
                     setStyle(Style.STROKE)
                     setDashPathEffect(floatArrayOf(18f, 14f))
                 }
@@ -231,22 +304,22 @@ fun MapsforgeMapView(
             }
         }
 
-        // 3. Moving Waze-style directional chevron + soft accuracy ring
+        // 3. Moving 3D Waze cyan chevron + soft aura
         if (cursorPosition != null) {
             val gpsLatLong = LatLong(cursorPosition.latitude, cursorPosition.longitude)
             val fillPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = 0x260099FF
+                color = 0x220099FF
                 setStyle(Style.FILL)
             }
             val strokePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = 0x800099FF.toInt()
-                strokeWidth = 3f
+                color = 0x660099FF.toInt()
+                strokeWidth = 2.5f
                 setStyle(Style.STROKE)
             }
             addOverlay(
                 Circle(
                     gpsLatLong,
-                    cursorPosition.accuracyMeters.coerceIn(10f, 120f),
+                    cursorPosition.accuracyMeters.coerceIn(10f, 100f),
                     fillPaint,
                     strokePaint
                 )
@@ -288,83 +361,118 @@ fun MapsforgeMapView(
         mv.layerManager.redrawLayers()
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            val touchSlop = ViewConfiguration.get(ctx).scaledTouchSlop
-            var downX = 0f
-            var downY = 0f
+    BoxWithConstraints(
+        modifier = modifier
+            .background(if (isNightMode) Color(0xFF0F172A) else Color(0xFFF3F5F7))
+            .clipToBounds()
+    ) {
+        val viewportHeightPx = with(density) { maxHeight.toPx() }
+        val animatedTranslationY by animateFloatAsState(
+            targetValue = if (is3dPerspective) viewportHeightPx * 0.14f else 0f,
+            animationSpec = tween(durationMillis = 420),
+            label = "map_translate_y_3d"
+        )
 
-            val mapView = MapView(ctx).apply {
-                isClickable = true
-                mapScaleBar.isVisible = false
-                setBuiltInZoomControls(false)
-                model.mapViewPosition.setZoomLevelMax(20.toByte())
-                model.mapViewPosition.setZoomLevelMin(7.toByte())
-                model.mapViewPosition.setCenter(
-                    LatLong(ElSalvadorPlaces.DEFAULT_CENTER_LAT, ElSalvadorPlaces.DEFAULT_CENTER_LON)
-                )
-                model.mapViewPosition.setZoomLevel(10.toByte())
+        AndroidView(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { mapViewSize = it }
+                .graphicsLayer {
+                    transformOrigin = TransformOrigin(0.5f, 0.5f)
+                    translationY = animatedTranslationY
+                    rotationX = animatedTilt
+                    scaleX = animatedScaleX
+                    scaleY = animatedScaleY
+                    cameraDistance = 28f
+                },
+            factory = { ctx ->
+                Parameters.SQUARE_FRAME_BUFFER = true
+                val touchSlop = ViewConfiguration.get(ctx).scaledTouchSlop
+                var downX = 0f
+                var downY = 0f
 
-                setOnTouchListener { _, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            downX = event.x
-                            downY = event.y
-                        }
-                        MotionEvent.ACTION_MOVE -> {
-                            if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) {
-                                latestUserPan()
+                val mapView = MapView(ctx).apply {
+                    isClickable = true
+                    mapScaleBar.isVisible = false
+                    setBuiltInZoomControls(false)
+                    model.mapViewPosition.setZoomLevelMax(20.toByte())
+                    model.mapViewPosition.setZoomLevelMin(7.toByte())
+                    model.mapViewPosition.setMapViewCenterY(0.5f)
+                    model.mapViewPosition.setCenter(
+                        LatLong(ElSalvadorPlaces.DEFAULT_CENTER_LAT, ElSalvadorPlaces.DEFAULT_CENTER_LON)
+                    )
+                    model.mapViewPosition.setZoomLevel(10.toByte())
+
+                    setOnTouchListener { _, event ->
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                downX = event.x
+                                downY = event.y
+                            }
+                            MotionEvent.ACTION_MOVE -> {
+                                if (abs(event.x - downX) > touchSlop || abs(event.y - downY) > touchSlop) {
+                                    latestUserPan()
+                                }
                             }
                         }
+                        false
                     }
-                    false
                 }
-            }
 
-            val tileCache = AndroidUtil.createTileCache(
-                ctx,
-                "sv_tile_cache",
-                mapView.model.displayModel.tileSize,
-                1.0f,
-                mapView.model.frameBufferModel.overdrawFactor
-            )
+                val tileCache = AndroidUtil.createTileCache(
+                    ctx,
+                    "sv_tile_cache",
+                    mapView.model.displayModel.tileSize,
+                    1.0f,
+                    mapView.model.frameBufferModel.overdrawFactor
+                )
 
-            val mapDataStore = MapFile(mapFile)
-            val tileRenderer = object : TileRendererLayer(
-                tileCache,
-                mapDataStore,
-                mapView.model.mapViewPosition,
-                false,
-                true,
-                true,
-                AndroidGraphicFactory.INSTANCE
-            ) {
-                override fun onLongPress(tapLatLong: LatLong?, layerXY: Point?, tapXY: Point?): Boolean {
-                    if (tapLatLong != null) {
-                        latestLongPress(tapLatLong.latitude, tapLatLong.longitude)
-                        return true
+                val mapDataStore = MapFile(mapFile)
+                val tileRenderer = object : TileRendererLayer(
+                    tileCache,
+                    mapDataStore,
+                    mapView.model.mapViewPosition,
+                    false,
+                    true,
+                    true,
+                    AndroidGraphicFactory.INSTANCE
+                ) {
+                    override fun onLongPress(tapLatLong: LatLong?, layerXY: Point?, tapXY: Point?): Boolean {
+                        if (tapLatLong != null) {
+                            latestLongPress(tapLatLong.latitude, tapLatLong.longitude)
+                            return true
+                        }
+                        return false
                     }
-                    return false
+                }.apply {
+                    setXmlRenderTheme(MapsforgeThemes.OSMARENDER)
                 }
-            }.apply {
-                setXmlRenderTheme(MapsforgeThemes.OSMARENDER)
-            }
 
-            mapView.model.mapViewPosition.addObserver {
-                val center = mapView.model.mapViewPosition.center
-                mapView.post {
-                    latestCenterChanged(center.latitude, center.longitude)
+                mapView.model.mapViewPosition.addObserver {
+                    val center = mapView.model.mapViewPosition.center
+                    mapView.post {
+                        latestCenterChanged(center.latitude, center.longitude)
+                    }
                 }
-            }
 
-            mapView.layerManager.layers.add(tileRenderer)
-            tileCacheRef = tileCache
-            tileRendererRef = tileRenderer
-            mapViewRef = mapView
-            mapView
-        }
-    )
+                mapView.layerManager.layers.add(tileRenderer)
+                tileCacheRef = tileCache
+                tileRendererRef = tileRenderer
+                mapViewRef = mapView
+                mapView
+            }
+        )
+    }
+}
+
+private fun computeBearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+    val phi1 = Math.toRadians(lat1)
+    val phi2 = Math.toRadians(lat2)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val y = sin(dLon) * cos(phi2)
+    val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLon)
+    val deg = Math.toDegrees(atan2(y, x)).toFloat()
+    return ((deg % 360f) + 360f) % 360f
 }
 
 private data class MarkerBitmaps(
@@ -373,56 +481,70 @@ private data class MarkerBitmaps(
     val saved: org.mapsforge.core.graphics.Bitmap
 )
 
-private fun createWazeArrowBitmap(
+private fun createWaze3dArrowBitmap(
     context: Context,
     bearingDegrees: Float
 ): org.mapsforge.core.graphics.Bitmap {
     val density = context.resources.displayMetrics.density
-    val size = (44 * density).toInt().coerceAtLeast(64)
+    val size = (48 * density).toInt().coerceAtLeast(68)
     val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bmp)
     val c = size / 2f
 
     // Translucent outer aura like Waze's cursor
     val auraPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x380099FF
+        color = 0x360099FF
         style = Paint.Style.FILL
     }
-    canvas.drawCircle(c, c, size * 0.44f, auraPaint)
+    canvas.drawCircle(c, c, size * 0.45f, auraPaint)
 
     canvas.save()
     canvas.rotate(bearingDegrees, c, c)
 
     val r = size * 0.34f
     val arrowPath = Path().apply {
-        moveTo(c, c - r * 1.05f)          // sharp nose pointing North (0 deg)
-        lineTo(c + r * 0.88f, c + r * 0.80f) // bottom-right wing
-        lineTo(c, c + r * 0.42f)          // center notch
-        lineTo(c - r * 0.88f, c + r * 0.80f) // bottom-left wing
+        moveTo(c, c - r * 1.04f)
+        lineTo(c + r * 0.90f, c + r * 0.78f)
+        lineTo(c, c + r * 0.44f)
+        lineTo(c - r * 0.90f, c + r * 0.78f)
         close()
     }
 
-    val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x44000000
-        style = Paint.Style.FILL
-    }
+    // Drop shadow
     canvas.save()
-    canvas.translate(0f, 2f * density)
-    canvas.drawPath(arrowPath, shadowPaint)
+    canvas.translate(0f, 3.5f * density)
+    canvas.drawPath(arrowPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0x45000000
+        style = Paint.Style.FILL
+    })
     canvas.restore()
 
-    val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF00B8D9.toInt() // Waze cyan chevron
+    // 3D beveled lower rim
+    canvas.save()
+    canvas.translate(0f, 2.2f * density)
+    canvas.drawPath(arrowPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF0284C7.toInt()
         style = Paint.Style.FILL
-    }
-    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt()
+    })
+    canvas.drawPath(arrowPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFE2E8F0.toInt()
         strokeWidth = 2.6f * density
         strokeJoin = Paint.Join.ROUND
         style = Paint.Style.STROKE
-    }
-    canvas.drawPath(arrowPath, fillPaint)
-    canvas.drawPath(arrowPath, strokePaint)
+    })
+    canvas.restore()
+
+    // Bright Waze cyan top chevron face + crisp white rim
+    canvas.drawPath(arrowPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF00B8D9.toInt()
+        style = Paint.Style.FILL
+    })
+    canvas.drawPath(arrowPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFFFFF.toInt()
+        strokeWidth = 2.4f * density
+        strokeJoin = Paint.Join.ROUND
+        style = Paint.Style.STROKE
+    })
     canvas.restore()
 
     return AndroidGraphicFactory.convertToBitmap(BitmapDrawable(context.resources, bmp))

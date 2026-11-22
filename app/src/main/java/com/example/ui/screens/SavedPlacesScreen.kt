@@ -19,9 +19,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -49,6 +46,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.data.local.SavedPlaceEntity
+import com.example.ui.theme.AppIcons
 import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
 
@@ -103,7 +101,7 @@ fun SavedPlacesScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
-                        Icons.Default.Bookmark,
+                        AppIcons.Bookmark,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
                         modifier = Modifier.size(64.dp)
@@ -159,7 +157,7 @@ fun SavedPlacesScreen(
                                         modifier = Modifier.minimumInteractiveComponentSize()
                                     ) {
                                         Icon(
-                                            Icons.Default.DeleteOutline,
+                                            AppIcons.DeleteOutline,
                                             contentDescription = "Eliminar lugar",
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -190,7 +188,7 @@ fun SavedPlacesScreen(
                                         .fillMaxWidth()
                                         .minimumInteractiveComponentSize()
                                 ) {
-                                    Icon(Icons.Default.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(AppIcons.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Ir aquí sin internet")
                                 }

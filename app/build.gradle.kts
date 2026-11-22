@@ -114,7 +114,8 @@ dependencies {
   // implementation(libs.androidx.camera.lifecycle)
   // implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
-  implementation(libs.androidx.compose.material.icons.extended)
+  // Replaced material-icons-extended (44MB DEX bloat) with lightweight AppIcons
+  // implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
@@ -162,6 +163,11 @@ dependencies {
     exclude(group = "org.apache.xmlgraphics", module = "xmlgraphics-commons")
     exclude(group = "org.slf4j", module = "slf4j-log4j12")
     exclude(group = "log4j", module = "log4j")
+    exclude(group = "org.codehaus.janino", module = "janino")
+    exclude(group = "org.codehaus.janino", module = "commons-compiler")
+    exclude(group = "com.fasterxml.woodstox", module = "woodstox-core")
+    exclude(group = "org.codehaus.woodstox", module = "stax2-api")
+    exclude(group = "com.fasterxml.jackson.module", module = "jackson-module-jaxb-annotations")
   }
   implementation(libs.slf4j.api)
   implementation(libs.slf4j.android)

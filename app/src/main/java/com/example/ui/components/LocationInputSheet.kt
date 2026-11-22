@@ -18,12 +18,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -57,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.ElSalvadorPlaces
 import com.example.data.local.SavedPlaceEntity
+import com.example.ui.theme.AppIcons
 import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
 import com.example.util.GoogleMapsLinkResolver
@@ -171,7 +168,7 @@ fun LocationInputSheet(
                         .minimumInteractiveComponentSize()
                         .testTag("paste_clipboard_button")
                 ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Pegar ubicación", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -186,7 +183,7 @@ fun LocationInputSheet(
                         .minimumInteractiveComponentSize()
                         .testTag("use_gps_origin_button")
                 ) {
-                    Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Inicio: Mi GPS", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -251,7 +248,7 @@ fun LocationInputSheet(
                                         .minimumInteractiveComponentSize()
                                         .testTag("go_parsed_coords_button")
                                 ) {
-                                    Icon(Icons.Default.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(AppIcons.Directions, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Ir aquí")
                                 }
@@ -386,7 +383,7 @@ private fun PlaceSuggestionRow(
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = if (isSaved) Icons.Default.Bookmark else Icons.Default.LocationOn,
+                imageVector = if (isSaved) AppIcons.Bookmark else Icons.Default.LocationOn,
                 contentDescription = null,
                 tint = if (isSaved) MaterialTheme.colorScheme.secondary
                 else MaterialTheme.colorScheme.primary,

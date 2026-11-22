@@ -61,11 +61,13 @@ data class MainUiState(
     val distanceToNextTurnMeters: Double = 0.0,
     val remainingDistanceMeters: Double = 0.0,
     val remainingTimeMillis: Long = 0L,
+    val currentRoadName: String? = null,
     val isNightMode: Boolean = false,
     val isCrosshairMode: Boolean = false,
     val showStepsSheet: Boolean = false,
     val showSearchSheet: Boolean = false,
     val showMenuSheet: Boolean = false,
+    val showRouteOptionsSheet: Boolean = false,
     val showSaveDialog: Boolean = false,
     val pendingMessage: String? = null,
     val mapFocusRequest: MapFocusTarget? = null
@@ -98,6 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var rerouteJob: Job? = null
     private var isAutoRerouting: Boolean = false
     private var lastRerouteElapsedMs: Long = 0L
+    private var lastRoadLookupElapsedMs: Long = 0L
 
     init {
         initializeOfflineData()
@@ -190,6 +193,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (shouldSilentReroute && rerouteDest != null) {
                     triggerSilentAutoReroute(pos, rerouteDest!!, rerouteProfile)
+                }
+
+                // Periodically refresh current street name pill while moving
+                val nowRoad = SystemClock.elapsedRealtime()
+                if (nowRoad - lastRoadLookupElapsedMs > 7000L) {
+                    lastRoadLookupElapsedMs = nowRoad
+                    viewModelScope.launch {
+                        val name = mapDataManager.findNearestRoadName(pos.latitude, pos.longitude)
+                        if (!name.isNullOrBlank()) {
+                            _uiState.update { it.copy(currentRoadName = name) }
+                        }
+                    }
                 }
             }
         }
@@ -286,11 +301,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val remainingTime = (route.totalTimeMillis * ratio).toLong().coerceAtLeast(60_000L)
 
+        val currentRoad = route.steps.getOrNull(currentIdx)?.streetName?.takeIf { it.isNotBlank() }
+            ?: state.currentRoadName
+
         return state.copy(
             activeStepIndex = currentIdx,
             distanceToNextTurnMeters = distToTurn,
             remainingDistanceMeters = remainingDist,
-            remainingTimeMillis = remainingTime
+            remainingTimeMillis = remainingTime,
+            currentRoadName = currentRoad
         )
     }
 
@@ -499,15 +518,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         } else current.cursorPosition
 
+                        val focusLat = updatedCursor?.latitude ?: route.origin.latitude
+                        val focusLon = updatedCursor?.longitude ?: route.origin.longitude
+
                         current.copy(
                             isRouting = false,
                             routeResult = route,
                             routeError = null,
+                            isNavigating = true,
+                            isFollowingGps = current.manualOrigin == null,
                             cursorPosition = updatedCursor,
                             activeStepIndex = 0,
                             distanceToNextTurnMeters = route.steps.firstOrNull()?.distanceMeters ?: 0.0,
                             remainingDistanceMeters = route.totalDistanceMeters,
-                            remainingTimeMillis = route.totalTimeMillis
+                            remainingTimeMillis = route.totalTimeMillis,
+                            currentRoadName = route.steps.firstOrNull()?.streetName?.takeIf { it.isNotBlank() }
+                                ?: current.currentRoadName,
+                            mapFocusRequest = MapFocusTarget(focusLat, focusLon, zoom = 17.toByte())
                         )
                     }
                 },
@@ -563,6 +590,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 routeError = null,
                 isNavigating = false,
                 showStepsSheet = false,
+                showRouteOptionsSheet = false,
                 remainingDistanceMeters = 0.0,
                 remainingTimeMillis = 0L
             )
@@ -585,12 +613,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showMenuSheet = visible) }
     }
 
+    fun setRouteOptionsSheetVisible(visible: Boolean) {
+        _uiState.update { it.copy(showRouteOptionsSheet = visible) }
+    }
+
     fun setStepsSheetVisible(visible: Boolean) {
-        _uiState.update { it.copy(showStepsSheet = visible) }
+        _uiState.update { it.copy(showStepsSheet = visible, showRouteOptionsSheet = false) }
     }
 
     fun setSaveDialogVisible(visible: Boolean) {
-        _uiState.update { it.copy(showSaveDialog = visible) }
+        _uiState.update { it.copy(showSaveDialog = visible, showRouteOptionsSheet = false) }
     }
 
     fun dismissPendingMessage() {
@@ -678,10 +710,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val hours = totalMin / 60L
             val mins = totalMin % 60L
             return when {
-                hours > 0 && mins > 0 -> "${hours} h ${mins} min"
+                hours > 0 && mins > 0 -> "$hours:${String.format(java.util.Locale.US, "%02d", mins)} h"
                 hours > 0 -> "${hours} h"
                 else -> "$mins min"
             }
+        }
+
+        fun formatClockEta(remainingMillis: Long): String {
+            val arrival = java.util.Date(System.currentTimeMillis() + remainingMillis.coerceAtLeast(60_000L))
+            return java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(arrival)
         }
     }
 }
