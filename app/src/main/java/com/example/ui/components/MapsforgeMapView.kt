@@ -9,7 +9,6 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
-import android.util.LruCache
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -22,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -96,12 +96,10 @@ fun MapsforgeMapView(
     var tileRendererRef by remember { mutableStateOf<TileRendererLayer?>(null) }
     var tileCacheRef by remember { mutableStateOf<TileCache?>(null) }
     var mapViewSize by remember { mutableStateOf(IntSize.Zero) }
+    var userRotationOffset by remember { mutableFloatStateOf(0f) }
     val overlayLayers = remember { mutableListOf<Layer>() }
 
     // Calibrated Waze first-person 3D perspective:
-    // Mapsforge stays centered (centerY = 0.5f) so its square FrameBuffer covers 100% of every
-    // corner at any heading angle (0..360°), while Compose shifts the vehicle down to ~64% screen
-    // height and applies scaled perspective tilt whose projected edges stay strictly outside [0, W]x[0, H].
     val targetTilt = if (is3dPerspective) 30f else 0f
     val targetScaleX = if (is3dPerspective) 1.55f else 1.0f
     val targetScaleY = if (is3dPerspective) 2.25f else 1.0f
@@ -169,26 +167,24 @@ fun MapsforgeMapView(
         } else null
     }
 
-    // Keep Mapsforge FrameBuffer centered (0.5f) so 360° heading-up rotation never clips diagonals
+    // Keep Mapsforge FrameBuffer centered (0.5f) and rotate map with heading-up bearing + manual gesture rotation offset
     LaunchedEffect(
         mapViewRef,
         mapViewSize,
         is3dPerspective,
         isFollowingGps,
         cursorPosition?.bearingDegrees,
-        fallbackRouteBearing
+        fallbackRouteBearing,
+        userRotationOffset
     ) {
         val mv = mapViewRef ?: return@LaunchedEffect
         runCatching {
             mv.model.mapViewPosition.setMapViewCenterY(0.5f)
         }
-        val bearing = cursorPosition?.bearingDegrees ?: fallbackRouteBearing
-        if (is3dPerspective && bearing != null && mv.width > 0 && mv.height > 0) {
-            if (isFollowingGps || manualOrigin != null) {
-                mv.rotate(Rotation(-bearing, mv.width / 2f, mv.height / 2f))
-            }
-        } else if (!is3dPerspective) {
-            mv.rotate(Rotation.NULL_ROTATION)
+        val bearing = cursorPosition?.bearingDegrees ?: fallbackRouteBearing ?: 0f
+        val totalRotation = bearing + userRotationOffset
+        if (mv.width > 0 && mv.height > 0) {
+            mv.rotate(Rotation(-totalRotation, mv.width / 2f, mv.height / 2f))
         }
         mv.invalidate()
     }
@@ -292,7 +288,7 @@ fun MapsforgeMapView(
             }
         }
 
-        // 3. Moving 3D Waze cyan chevron + soft aura
+        // 3. Moving straight-up Waze chevron arrow + soft aura
         if (cursorPosition != null) {
             val gpsLatLong = LatLong(cursorPosition.latitude, cursorPosition.longitude)
             val fillPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
@@ -379,6 +375,10 @@ fun MapsforgeMapView(
                 var downX = 0f
                 var downY = 0f
 
+                val rotationDetector = RotationGestureDetector { delta ->
+                    userRotationOffset = (userRotationOffset + delta) % 360f
+                }
+
                 val mapView = MapView(ctx).apply {
                     isClickable = true
                     mapScaleBar.isVisible = false
@@ -392,6 +392,7 @@ fun MapsforgeMapView(
                     model.mapViewPosition.setZoomLevel(10.toByte())
 
                     setOnTouchListener { _, event ->
+                        rotationDetector.onTouchEvent(event)
                         when (event.actionMasked) {
                             MotionEvent.ACTION_DOWN -> {
                                 downX = event.x
@@ -450,6 +451,67 @@ fun MapsforgeMapView(
                 mapView
             }
         )
+    }
+}
+
+private class RotationGestureDetector(private val onRotation: (Float) -> Unit) {
+    private var pointerId1 = -1
+    private var pointerId2 = -1
+    private var lastAngle = 0f
+
+    fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pointerId1 = event.getPointerId(0)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (pointerId1 != -1) {
+                    pointerId2 = event.getPointerId(event.actionIndex)
+                    lastAngle = angleBetweenPointers(event, pointerId1, pointerId2)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (pointerId1 != -1 && pointerId2 != -1) {
+                    val idx1 = event.findPointerIndex(pointerId1)
+                    val idx2 = event.findPointerIndex(pointerId2)
+                    if (idx1 >= 0 && idx2 >= 0) {
+                        val newAngle = angleBetweenPointers(event, pointerId1, pointerId2)
+                        var delta = newAngle - lastAngle
+                        if (delta > 180f) delta -= 360f
+                        if (delta < -180f) delta += 360f
+                        if (abs(delta) > 0.1f) {
+                            onRotation(delta)
+                            lastAngle = newAngle
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val actionId = event.getPointerId(event.actionIndex)
+                if (actionId == pointerId1) {
+                    pointerId1 = pointerId2
+                    pointerId2 = -1
+                } else if (actionId == pointerId2) {
+                    pointerId2 = -1
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                pointerId1 = -1
+                pointerId2 = -1
+            }
+        }
+        return true
+    }
+
+    private fun angleBetweenPointers(event: MotionEvent, id1: Int, id2: Int): Float {
+        val i1 = event.findPointerIndex(id1)
+        val i2 = event.findPointerIndex(id2)
+        if (i1 < 0 || i2 < 0) return 0f
+        val x1 = event.getX(i1)
+        val y1 = event.getY(i1)
+        val x2 = event.getX(i2)
+        val y2 = event.getY(i2)
+        return Math.toDegrees(atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())).toFloat()
     }
 }
 
