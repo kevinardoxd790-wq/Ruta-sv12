@@ -126,21 +126,9 @@ fun MapsforgeMapView(
         MarkerBitmaps(
             destination = createPinBitmap(context, 0xFFEF4444.toInt(), 0xFFFFFFFF.toInt()),
             origin = createPinBitmap(context, 0xFF0099FF.toInt(), 0xFFFFFFFF.toInt()),
-            saved = createSavedDotBitmap(context)
+            saved = createSavedDotBitmap(context),
+            vehicle = createWazeStraightArrowBitmap(context)
         )
-    }
-
-    val vehicleArrowCache = remember {
-        LruCache<Int, org.mapsforge.core.graphics.Bitmap>(72)
-    }
-
-    fun getRotatedVehicleBitmap(bearingDeg: Float): org.mapsforge.core.graphics.Bitmap {
-        val normalized = (((bearingDeg % 360f) + 360f) % 360f)
-        val quantized = ((normalized / 5f).roundToInt() * 5) % 360
-        return vehicleArrowCache.get(quantized) ?: createWaze3dArrowBitmap(
-            context = context,
-            bearingDegrees = quantized.toFloat()
-        ).also { vehicleArrowCache.put(quantized, it) }
     }
 
     DisposableEffect(mapFile) {
@@ -327,7 +315,7 @@ fun MapsforgeMapView(
             addOverlay(
                 Marker(
                     gpsLatLong,
-                    getRotatedVehicleBitmap(cursorPosition.bearingDegrees),
+                    markerBitmaps.vehicle,
                     0,
                     0
                 )
@@ -478,13 +466,11 @@ private fun computeBearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2
 private data class MarkerBitmaps(
     val destination: org.mapsforge.core.graphics.Bitmap,
     val origin: org.mapsforge.core.graphics.Bitmap,
-    val saved: org.mapsforge.core.graphics.Bitmap
+    val saved: org.mapsforge.core.graphics.Bitmap,
+    val vehicle: org.mapsforge.core.graphics.Bitmap
 )
 
-private fun createWaze3dArrowBitmap(
-    context: Context,
-    bearingDegrees: Float
-): org.mapsforge.core.graphics.Bitmap {
+private fun createWazeStraightArrowBitmap(context: Context): org.mapsforge.core.graphics.Bitmap {
     val density = context.resources.displayMetrics.density
     val size = (48 * density).toInt().coerceAtLeast(68)
     val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -497,9 +483,6 @@ private fun createWaze3dArrowBitmap(
         style = Paint.Style.FILL
     }
     canvas.drawCircle(c, c, size * 0.45f, auraPaint)
-
-    canvas.save()
-    canvas.rotate(bearingDegrees, c, c)
 
     val r = size * 0.34f
     val arrowPath = Path().apply {
@@ -545,7 +528,6 @@ private fun createWaze3dArrowBitmap(
         strokeJoin = Paint.Join.ROUND
         style = Paint.Style.STROKE
     })
-    canvas.restore()
 
     return AndroidGraphicFactory.convertToBitmap(BitmapDrawable(context.resources, bmp))
 }
