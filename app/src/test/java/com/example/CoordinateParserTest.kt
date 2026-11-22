@@ -66,4 +66,25 @@ class CoordinateParserTest {
         val success = result as CoordinateParseResult.Success
         assertFalse(success.isInsideElSalvador)
     }
+
+    @Test
+    fun parsesGoogleMapsPlaceUrlWithPinAndName() {
+        val url = "https://www.google.com/maps/place/Colonia+Escalon/@13.7012,-89.2400,15z/data=!3m1!4b1!4m6!3m5!1s0x0:0x0!8m2!3d13.7045!4d-89.2421!16s"
+        val result = CoordinateParser.parse(url)
+        assertTrue(result is CoordinateParseResult.Success)
+        val success = result as CoordinateParseResult.Success
+        assertEquals(13.7045, success.latitude, 0.0001)
+        assertEquals(-89.2421, success.longitude, 0.0001)
+        assertEquals("Colonia Escalon", success.label)
+    }
+
+    @Test
+    fun parsesGoogleNavigationUri() {
+        val uri = "google.navigation:q=13.4921,-89.3812"
+        val result = CoordinateParser.parse(uri)
+        assertTrue(result is CoordinateParseResult.Success)
+        val success = result as CoordinateParseResult.Success
+        assertEquals(13.4921, success.latitude, 0.0001)
+        assertEquals(-89.3812, success.longitude, 0.0001)
+    }
 }

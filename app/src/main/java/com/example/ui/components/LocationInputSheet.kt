@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +59,7 @@ import com.example.data.ElSalvadorPlaces
 import com.example.data.local.SavedPlaceEntity
 import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
+import com.example.util.GoogleMapsLinkResolver
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,8 +73,15 @@ fun LocationInputSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val clipboard = LocalClipboardManager.current
     var query by remember { mutableStateOf("") }
+    var parseResult by remember { mutableStateOf<CoordinateParseResult>(CoordinateParseResult.Empty) }
 
-    val parseResult = remember(query) { CoordinateParser.parse(query) }
+    LaunchedEffect(query) {
+        parseResult = CoordinateParser.parse(query)
+        if (parseResult !is CoordinateParseResult.Success && query.isNotBlank()) {
+            parseResult = GoogleMapsLinkResolver.resolve(query)
+        }
+    }
+
     val filteredSaved = remember(query, savedPlaces) {
         val q = query.trim().lowercase()
         if (q.isEmpty()) savedPlaces.take(5)
@@ -104,8 +113,9 @@ fun LocationInputSheet(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Destino o Coordenadas",
-                    style = MaterialTheme.typography.titleLarge
+                    text = "¿Adónde vas?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
                 )
                 IconButton(
                     onClick = onDismiss,
@@ -126,7 +136,7 @@ fun LocationInputSheet(
                     .fillMaxWidth()
                     .testTag("location_input_field"),
                 placeholder = {
-                    Text("Pega coordenadas (13.69, -89.21), link geo:, WhatsApp o municipio…")
+                    Text("Pega enlace de Google Maps, coordenadas o busca un lugar…")
                 },
                 leadingIcon = {
                     Icon(Icons.Default.Search, contentDescription = null)
@@ -140,7 +150,7 @@ fun LocationInputSheet(
                 },
                 singleLine = false,
                 maxLines = 3,
-                shape = RoundedCornerShape(14.dp)
+                shape = RoundedCornerShape(24.dp)
             )
 
             Spacer(Modifier.height(10.dp))
@@ -185,7 +195,7 @@ fun LocationInputSheet(
             Spacer(Modifier.height(12.dp))
 
             // Instant Coordinate Recognition Card
-            when (parseResult) {
+            when (val currentResult = parseResult) {
                 is CoordinateParseResult.Success -> {
                     Card(
                         colors = CardDefaults.cardColors(
@@ -204,21 +214,21 @@ fun LocationInputSheet(
                                 Spacer(Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = parseResult.label ?: "Coordenada detectada sin internet",
+                                        text = currentResult.label ?: "Ubicación detectada",
                                         style = MaterialTheme.typography.titleSmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                     Text(
                                         text = CoordinateParser.formatCoordinates(
-                                            parseResult.latitude,
-                                            parseResult.longitude
+                                            currentResult.latitude,
+                                            currentResult.longitude
                                         ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                             }
-                            if (!parseResult.isInsideElSalvador) {
+                            if (!currentResult.isInsideElSalvador) {
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     text = "Aviso: estas coordenadas están fuera de los límites de El Salvador.",
@@ -231,9 +241,9 @@ fun LocationInputSheet(
                                 Button(
                                     onClick = {
                                         onSelectDestination(
-                                            parseResult.latitude,
-                                            parseResult.longitude,
-                                            parseResult.label
+                                            currentResult.latitude,
+                                            currentResult.longitude,
+                                            currentResult.label
                                         )
                                     },
                                     modifier = Modifier
@@ -248,9 +258,9 @@ fun LocationInputSheet(
                                 OutlinedButton(
                                     onClick = {
                                         onSelectOrigin(
-                                            parseResult.latitude,
-                                            parseResult.longitude,
-                                            parseResult.label
+                                            currentResult.latitude,
+                                            currentResult.longitude,
+                                            currentResult.label
                                         )
                                         onDismiss()
                                     },
@@ -285,7 +295,7 @@ fun LocationInputSheet(
                             )
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                text = "Enlace corto detectado (${parseResult.url}). Sin internet no se puede expandir. Pide que te copien las coordenadas numéricas (ej. 13.6929, -89.2182) o compartan el pin como geo:.",
+                                text = "Enlace corto detectado (${currentResult.url}). Sin internet no se puede expandir. Pide que te copien las coordenadas numéricas (ej. 13.6929, -89.2182) o compartan el enlace completo de Google Maps.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer
                             )

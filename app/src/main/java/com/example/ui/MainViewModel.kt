@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ElSalvadorPlaces
@@ -15,6 +16,8 @@ import com.example.map.OfflineRouteResult
 import com.example.map.RouteProfile
 import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
+import com.example.util.GoogleMapsLinkResolver
+import com.example.util.RouteGeometry
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,10 +36,20 @@ data class SelectedPoint(
     val isInsideElSalvador: Boolean = CoordinateParser.isInsideElSalvador(latitude, longitude)
 )
 
+data class CursorDisplayPosition(
+    val latitude: Double,
+    val longitude: Double,
+    val bearingDegrees: Float,
+    val accuracyMeters: Float,
+    val isSnappedToRoute: Boolean
+)
+
 data class MainUiState(
     val initState: OfflineInitState = OfflineInitState.Preparing("Iniciando…", 0.05f),
     val hasLocationPermission: Boolean = false,
     val gpsPosition: GpsPosition? = null,
+    val cursorPosition: CursorDisplayPosition? = null,
+    val isFollowingGps: Boolean = true,
     val manualOrigin: SelectedPoint? = null,
     val destination: SelectedPoint? = null,
     val selectedProfile: RouteProfile = RouteProfile.CAR,
@@ -46,10 +59,13 @@ data class MainUiState(
     val isNavigating: Boolean = false,
     val activeStepIndex: Int = 0,
     val distanceToNextTurnMeters: Double = 0.0,
+    val remainingDistanceMeters: Double = 0.0,
+    val remainingTimeMillis: Long = 0L,
     val isNightMode: Boolean = false,
     val isCrosshairMode: Boolean = false,
     val showStepsSheet: Boolean = false,
     val showSearchSheet: Boolean = false,
+    val showMenuSheet: Boolean = false,
     val showSaveDialog: Boolean = false,
     val pendingMessage: String? = null,
     val mapFocusRequest: MapFocusTarget? = null
@@ -79,6 +95,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private var locationJob: Job? = null
+    private var rerouteJob: Job? = null
+    private var isAutoRerouting: Boolean = false
+    private var lastRerouteElapsedMs: Long = 0L
 
     init {
         initializeOfflineData()
@@ -110,27 +129,143 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (locationJob?.isActive == true) return
         locationJob = viewModelScope.launch {
             OfflineLocationTracker.observeLocation(getApplication()).collect { pos ->
+                if (pos == null) return@collect
+                var shouldSilentReroute = false
+                var rerouteDest: SelectedPoint? = null
+                var rerouteProfile = RouteProfile.CAR
+
                 _uiState.update { state ->
-                    val next = state.copy(gpsPosition = pos)
-                    updateNavigationProgress(next, pos)
+                    val route = state.routeResult
+                    val snap = if (route != null) {
+                        RouteGeometry.analyzePositionOnRoute(pos.latitude, pos.longitude, route)
+                    } else {
+                        null
+                    }
+
+                    val snapped = snap != null && snap.distanceToRouteMeters <= SNAP_TO_ROUTE_MAX_METERS
+                    val cursor = CursorDisplayPosition(
+                        latitude = if (snapped) snap!!.snappedLat else pos.latitude,
+                        longitude = if (snapped) snap!!.snappedLon else pos.longitude,
+                        bearingDegrees = when {
+                            snapped -> snap!!.segmentBearingDegrees
+                            pos.bearing != 0f -> pos.bearing
+                            else -> state.cursorPosition?.bearingDegrees ?: 0f
+                        },
+                        accuracyMeters = pos.accuracyMeters,
+                        isSnappedToRoute = snapped
+                    )
+
+                    val updatedNav = updateNavigationProgress(state.copy(
+                        gpsPosition = pos,
+                        cursorPosition = cursor
+                    ), pos, snap)
+
+                    // Check silent auto-rerouting when following GPS (never interrupts or notifies driver)
+                    val dest = updatedNav.destination
+                    if (route != null &&
+                        dest != null &&
+                        updatedNav.manualOrigin == null &&
+                        updatedNav.initState is OfflineInitState.Ready &&
+                        snap != null &&
+                        !snap.isNearOffRoadTail &&
+                        snap.distanceToRouteMeters > OFF_ROUTE_REROUTE_THRESHOLD_METERS &&
+                        pos.accuracyMeters <= MAX_ACCURACY_FOR_REROUTE_METERS
+                    ) {
+                        val distToDest = OfflineLocationTracker.haversineMeters(
+                            pos.latitude, pos.longitude, dest.latitude, dest.longitude
+                        )
+                        val now = SystemClock.elapsedRealtime()
+                        if (distToDest > 50.0 &&
+                            !isAutoRerouting &&
+                            (now - lastRerouteElapsedMs) >= SILENT_REROUTE_COOLDOWN_MS
+                        ) {
+                            shouldSilentReroute = true
+                            rerouteDest = dest
+                            rerouteProfile = updatedNav.selectedProfile
+                        }
+                    }
+
+                    updatedNav
+                }
+
+                if (shouldSilentReroute && rerouteDest != null) {
+                    triggerSilentAutoReroute(pos, rerouteDest!!, rerouteProfile)
                 }
             }
         }
     }
 
-    private fun updateNavigationProgress(state: MainUiState, pos: GpsPosition?): MainUiState {
-        if (!state.isNavigating || pos == null) return state
+    private fun triggerSilentAutoReroute(
+        gps: GpsPosition,
+        dest: SelectedPoint,
+        profile: RouteProfile
+    ) {
+        if (isAutoRerouting) return
+        isAutoRerouting = true
+        lastRerouteElapsedMs = SystemClock.elapsedRealtime()
+        rerouteJob?.cancel()
+        rerouteJob = viewModelScope.launch {
+            try {
+                val result = mapDataManager.calculateRoute(
+                    startLat = gps.latitude,
+                    startLon = gps.longitude,
+                    endLat = dest.latitude,
+                    endLon = dest.longitude,
+                    profile = profile
+                )
+                result.onSuccess { newRoute ->
+                    // Silently swap route without any dialog, toast, or alert to the driver
+                    _uiState.update { state ->
+                        if (state.destination?.latitude != dest.latitude ||
+                            state.destination.longitude != dest.longitude
+                        ) {
+                            return@update state
+                        }
+                        val snap = RouteGeometry.analyzePositionOnRoute(gps.latitude, gps.longitude, newRoute)
+                        val snapped = snap.distanceToRouteMeters <= SNAP_TO_ROUTE_MAX_METERS
+                        val cursor = CursorDisplayPosition(
+                            latitude = if (snapped) snap.snappedLat else gps.latitude,
+                            longitude = if (snapped) snap.snappedLon else gps.longitude,
+                            bearingDegrees = if (snapped) snap.segmentBearingDegrees else (state.cursorPosition?.bearingDegrees ?: gps.bearing),
+                            accuracyMeters = gps.accuracyMeters,
+                            isSnappedToRoute = snapped
+                        )
+                        state.copy(
+                            routeResult = newRoute,
+                            routeError = null,
+                            cursorPosition = cursor,
+                            activeStepIndex = 0,
+                            distanceToNextTurnMeters = newRoute.steps.firstOrNull()?.distanceMeters ?: 0.0,
+                            remainingDistanceMeters = newRoute.totalDistanceMeters,
+                            remainingTimeMillis = newRoute.totalTimeMillis
+                        )
+                    }
+                }
+            } finally {
+                isAutoRerouting = false
+            }
+        }
+    }
+
+    private fun updateNavigationProgress(
+        state: MainUiState,
+        pos: GpsPosition,
+        snap: com.example.util.RouteSnapAnalysis?
+    ): MainUiState {
         val route = state.routeResult ?: return state
         if (route.steps.isEmpty()) return state
 
         var currentIdx = state.activeStepIndex.coerceIn(0, route.steps.lastIndex)
-        if (currentIdx < route.steps.lastIndex) {
-            val nextStep = route.steps[currentIdx + 1]
-            val distToNext = OfflineLocationTracker.haversineMeters(
-                pos.latitude, pos.longitude, nextStep.lat, nextStep.lon
+        // Advance forward if driver passed upcoming step maneuver point
+        for (lookAhead in (currentIdx + 1)..route.steps.lastIndex) {
+            val candidateStep = route.steps[lookAhead]
+            val distToStep = OfflineLocationTracker.haversineMeters(
+                pos.latitude, pos.longitude, candidateStep.lat, candidateStep.lon
             )
-            if (distToNext < 28.0) {
-                currentIdx += 1
+            if (distToStep < 30.0) {
+                currentIdx = lookAhead
+            } else if (lookAhead == currentIdx + 1) {
+                break
             }
         }
 
@@ -139,47 +274,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             route.steps.last()
         }
-        val dist = OfflineLocationTracker.haversineMeters(
+        val distToTurn = OfflineLocationTracker.haversineMeters(
             pos.latitude, pos.longitude, targetStep.lat, targetStep.lon
         )
 
+        val remainingDist = snap?.remainingDistanceMeters ?: route.totalDistanceMeters
+        val ratio = if (route.totalDistanceMeters > 1.0) {
+            (remainingDist / route.totalDistanceMeters).coerceIn(0.0, 1.0)
+        } else {
+            1.0
+        }
+        val remainingTime = (route.totalTimeMillis * ratio).toLong().coerceAtLeast(60_000L)
+
         return state.copy(
             activeStepIndex = currentIdx,
-            distanceToNextTurnMeters = dist
+            distanceToNextTurnMeters = distToTurn,
+            remainingDistanceMeters = remainingDist,
+            remainingTimeMillis = remainingTime
         )
     }
 
     fun onIncomingTextOrUri(rawText: String?) {
-        when (val parsed = CoordinateParser.parse(rawText)) {
-            is CoordinateParseResult.Success -> {
-                val label = parsed.label ?: "Punto recibido (${CoordinateParser.formatCoordinates(parsed.latitude, parsed.longitude)})"
-                setDestinationPoint(
-                    lat = parsed.latitude,
-                    lon = parsed.longitude,
-                    label = label,
-                    autoRoute = true
-                )
-                if (!parsed.isInsideElSalvador) {
+        if (rawText.isNullOrBlank()) return
+        viewModelScope.launch {
+            when (val parsed = GoogleMapsLinkResolver.resolve(rawText)) {
+                is CoordinateParseResult.Success -> {
+                    val label = parsed.label ?: "Ubicación (${CoordinateParser.formatCoordinates(parsed.latitude, parsed.longitude)})"
+                    setDestinationPoint(
+                        lat = parsed.latitude,
+                        lon = parsed.longitude,
+                        label = label,
+                        autoRoute = true
+                    )
+                    if (!parsed.isInsideElSalvador) {
+                        _uiState.update {
+                            it.copy(
+                                pendingMessage = "Estas coordenadas parecen estar fuera de El Salvador; el mapa solo cubre el territorio salvadoreño."
+                            )
+                        }
+                    }
+                }
+                is CoordinateParseResult.ShortenedLinkWarning -> {
                     _uiState.update {
                         it.copy(
-                            pendingMessage = "Estas coordenadas parecen estar fuera de El Salvador; el mapa solo cubre el territorio salvadoreño."
+                            pendingMessage = "Enlace corto de Google Maps detectado. Sin internet no puede expandirse: en Google Maps toca el pin y copia las coordenadas (ej. 13.6929, -89.2182) o comparte el enlace completo."
                         )
                     }
                 }
-            }
-            is CoordinateParseResult.ShortenedLinkWarning -> {
-                _uiState.update {
-                    it.copy(
-                        pendingMessage = "Los enlaces cortos (${parsed.url}) no contienen coordenadas y requieren internet para abrirse. Pide que te envíen los números de latitud y longitud o una ubicación geo:."
-                    )
+                CoordinateParseResult.NoMatch -> {
+                    _uiState.update {
+                        it.copy(pendingMessage = "No se encontraron coordenadas válidas en el enlace o texto recibido.")
+                    }
                 }
+                CoordinateParseResult.Empty -> Unit
             }
-            CoordinateParseResult.NoMatch -> {
-                _uiState.update {
-                    it.copy(pendingMessage = "No se encontraron coordenadas válidas en el texto recibido.")
-                }
-            }
-            CoordinateParseResult.Empty -> Unit
         }
     }
 
@@ -201,8 +349,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 destination = point,
                 isCrosshairMode = false,
                 showSearchSheet = false,
+                showMenuSheet = false,
                 routeError = null,
                 isNavigating = false,
+                isFollowingGps = false,
                 mapFocusRequest = MapFocusTarget(lat, lon, zoom = 15.toByte())
             )
         }
@@ -229,6 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 manualOrigin = SelectedPoint(lat, lon, displayLabel),
                 isCrosshairMode = false,
                 routeError = null,
+                isFollowingGps = false,
                 mapFocusRequest = MapFocusTarget(lat, lon, zoom = 14.toByte())
             )
         }
@@ -238,7 +389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun useLiveGpsAsOrigin() {
-        _uiState.update { it.copy(manualOrigin = null) }
+        _uiState.update { it.copy(manualOrigin = null, isFollowingGps = true) }
         val gps = _uiState.value.gpsPosition
         if (gps != null) {
             _uiState.update {
@@ -256,11 +407,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onUserPannedMap() {
+        if (_uiState.value.isFollowingGps) {
+            _uiState.update { it.copy(isFollowingGps = false) }
+        }
+    }
+
     fun centerOnMyLocationOrDefault() {
         val gps = _uiState.value.gpsPosition
         if (gps != null) {
             _uiState.update {
-                it.copy(mapFocusRequest = MapFocusTarget(gps.latitude, gps.longitude, zoom = 16.toByte()))
+                it.copy(
+                    isFollowingGps = true,
+                    mapFocusRequest = MapFocusTarget(gps.latitude, gps.longitude, zoom = 17.toByte())
+                )
             }
         } else {
             _uiState.update {
@@ -268,7 +428,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     mapFocusRequest = MapFocusTarget(
                         ElSalvadorPlaces.SAN_SALVADOR_LAT,
                         ElSalvadorPlaces.SAN_SALVADOR_LON,
-                        zoom = 12.toByte()
+                        zoom = 13.toByte()
                     ),
                     pendingMessage = "Sin señal GPS todavía. Centrado en San Salvador."
                 )
@@ -281,6 +441,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.destination != null) {
             calculateCurrentRoute()
         }
+    }
+
+    fun toggleRouteProfile() {
+        val next = if (_uiState.value.selectedProfile == RouteProfile.CAR) {
+            RouteProfile.FOOT
+        } else {
+            RouteProfile.CAR
+        }
+        selectProfile(next)
     }
 
     fun calculateCurrentRoute() {
@@ -314,13 +483,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             result.fold(
                 onSuccess = { route ->
-                    _uiState.update {
-                        it.copy(
+                    _uiState.update { current ->
+                        val gps = current.gpsPosition
+                        val snap = if (gps != null) {
+                            RouteGeometry.analyzePositionOnRoute(gps.latitude, gps.longitude, route)
+                        } else null
+                        val snapped = snap != null && snap.distanceToRouteMeters <= SNAP_TO_ROUTE_MAX_METERS
+                        val updatedCursor = if (gps != null) {
+                            CursorDisplayPosition(
+                                latitude = if (snapped) snap!!.snappedLat else gps.latitude,
+                                longitude = if (snapped) snap!!.snappedLon else gps.longitude,
+                                bearingDegrees = if (snapped) snap!!.segmentBearingDegrees else (current.cursorPosition?.bearingDegrees ?: gps.bearing),
+                                accuracyMeters = gps.accuracyMeters,
+                                isSnappedToRoute = snapped
+                            )
+                        } else current.cursorPosition
+
+                        current.copy(
                             isRouting = false,
                             routeResult = route,
                             routeError = null,
+                            cursorPosition = updatedCursor,
                             activeStepIndex = 0,
-                            distanceToNextTurnMeters = route.steps.firstOrNull()?.distanceMeters ?: 0.0
+                            distanceToNextTurnMeters = route.steps.firstOrNull()?.distanceMeters ?: 0.0,
+                            remainingDistanceMeters = route.totalDistanceMeters,
+                            remainingTimeMillis = route.totalTimeMillis
                         )
                     }
                 },
@@ -347,12 +534,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startNavigation() {
         val route = _uiState.value.routeResult ?: return
-        val focusLat = _uiState.value.gpsPosition?.latitude ?: route.origin.latitude
-        val focusLon = _uiState.value.gpsPosition?.longitude ?: route.origin.longitude
+        val cursor = _uiState.value.cursorPosition
+        val focusLat = cursor?.latitude ?: _uiState.value.gpsPosition?.latitude ?: route.origin.latitude
+        val focusLon = cursor?.longitude ?: _uiState.value.gpsPosition?.longitude ?: route.origin.longitude
         _uiState.update {
             it.copy(
                 isNavigating = true,
+                isFollowingGps = true,
                 activeStepIndex = 0,
+                remainingDistanceMeters = route.totalDistanceMeters,
+                remainingTimeMillis = route.totalTimeMillis,
                 mapFocusRequest = MapFocusTarget(focusLat, focusLon, zoom = 17.toByte())
             )
         }
@@ -363,13 +554,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearRoute() {
+        rerouteJob?.cancel()
+        isAutoRerouting = false
         _uiState.update {
             it.copy(
                 destination = null,
                 routeResult = null,
                 routeError = null,
                 isNavigating = false,
-                showStepsSheet = false
+                showStepsSheet = false,
+                remainingDistanceMeters = 0.0,
+                remainingTimeMillis = 0L
             )
         }
     }
@@ -379,11 +574,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleCrosshairMode() {
-        _uiState.update { it.copy(isCrosshairMode = !it.isCrosshairMode) }
+        _uiState.update { it.copy(isCrosshairMode = !it.isCrosshairMode, showMenuSheet = false) }
     }
 
     fun setSearchSheetVisible(visible: Boolean) {
         _uiState.update { it.copy(showSearchSheet = visible) }
+    }
+
+    fun setMenuSheetVisible(visible: Boolean) {
+        _uiState.update { it.copy(showMenuSheet = visible) }
     }
 
     fun setStepsSheetVisible(visible: Boolean) {
@@ -449,6 +648,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 showStepsSheet = false,
+                isFollowingGps = false,
                 mapFocusRequest = MapFocusTarget(lat, lon, zoom = 17.toByte())
             )
         }
@@ -460,6 +660,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        private const val SNAP_TO_ROUTE_MAX_METERS = 35.0
+        private const val OFF_ROUTE_REROUTE_THRESHOLD_METERS = 45.0
+        private const val MAX_ACCURACY_FOR_REROUTE_METERS = 55f
+        private const val SILENT_REROUTE_COOLDOWN_MS = 4500L
+
         fun formatDistance(meters: Double): String {
             return if (meters < 1000) {
                 "${meters.roundToInt()} m"

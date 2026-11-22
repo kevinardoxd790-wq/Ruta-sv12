@@ -32,16 +32,6 @@ object OfflineLocationTracker {
     fun observeLocation(context: Context): Flow<GpsPosition?> = callbackFlow {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-        fun Location.toGpsPosition(): GpsPosition = GpsPosition(
-            latitude = latitude,
-            longitude = longitude,
-            accuracyMeters = accuracy,
-            bearing = if (hasBearing()) bearing else 0f,
-            speedMps = if (hasSpeed()) speed else 0f,
-            provider = provider ?: "gps",
-            timestamp = time
-        )
-
         // Emit best known last location immediately if available
         val providers = listOf(
             LocationManager.GPS_PROVIDER,
@@ -59,6 +49,30 @@ object OfflineLocationTracker {
                 }.getOrNull()
             }
             .maxByOrNull { it.time }
+
+        var lastLocation: Location? = bestLast
+
+        fun Location.toGpsPosition(): GpsPosition {
+            val prev = lastLocation
+            val computedBearing = when {
+                hasBearing() && bearing != 0f -> bearing
+                prev != null && haversineMeters(prev.latitude, prev.longitude, latitude, longitude) > 1.5 ->
+                    com.example.util.RouteGeometry.bearingDegrees(
+                        prev.latitude, prev.longitude, latitude, longitude
+                    )
+                else -> 0f
+            }
+            lastLocation = this
+            return GpsPosition(
+                latitude = latitude,
+                longitude = longitude,
+                accuracyMeters = accuracy,
+                bearing = computedBearing,
+                speedMps = if (hasSpeed()) speed else 0f,
+                provider = provider ?: "gps",
+                timestamp = time
+            )
+        }
 
         trySend(bestLast?.toGpsPosition())
 
@@ -79,8 +93,8 @@ object OfflineLocationTracker {
                 if (locationManager.allProviders.contains(provider)) {
                     locationManager.requestLocationUpdates(
                         provider,
-                        1500L,
-                        3f,
+                        1000L,
+                        1f,
                         listener,
                         Looper.getMainLooper()
                     )

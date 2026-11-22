@@ -206,7 +206,15 @@ fun SavedPlacesScreen(
         var name by remember { mutableStateOf("") }
         var coordText by remember { mutableStateOf("") }
         var notes by remember { mutableStateOf("") }
-        val parsed = remember(coordText) { CoordinateParser.parse(coordText) }
+        var parsed by remember { mutableStateOf<CoordinateParseResult>(CoordinateParseResult.Empty) }
+        androidx.compose.runtime.LaunchedEffect(coordText) {
+            val quick = CoordinateParser.parse(coordText)
+            parsed = if (quick !is CoordinateParseResult.Success && coordText.isNotBlank()) {
+                com.example.util.GoogleMapsLinkResolver.resolve(coordText)
+            } else {
+                quick
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showAddDialog = false },
@@ -216,15 +224,15 @@ fun SavedPlacesScreen(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("Nombre (ej. Finca San José)") },
+                        label = { Text("Nombre (ej. Casa, Finca San José)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = coordText,
                         onValueChange = { coordText = it },
-                        label = { Text("Coordenadas o enlace geo:") },
-                        placeholder = { Text("13.6929, -89.2182") },
+                        label = { Text("Coordenadas o enlace de Google Maps") },
+                        placeholder = { Text("https://maps.google.com/... o 13.6929, -89.2182") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )

@@ -8,6 +8,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Descargar código del repositorio
@@ -52,9 +54,23 @@ jobs:
       - name: Compilar APK Debug
         run: gradle :app:assembleDebug --no-configuration-cache
 
-      - name: Subir APK descargable
+      - name: Subir APK descargable (ZIP en Artifacts)
         uses: actions/upload-artifact@v4
         with:
           name: RutaSV-Offline-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publicar APK directo en Releases (sin ZIP)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk RutaSV-Offline.apk
+          if gh release view latest-apk >/dev/null 2>&1; then
+            gh release upload latest-apk RutaSV-Offline.apk --clobber
+          else
+            gh release create latest-apk RutaSV-Offline.apk \
+              --target "$GITHUB_SHA" \
+              --title "RutaSV Offline APK" \
+              --notes "Descarga directa del APK de RutaSV Offline (mapa y rutas de El Salvador 100% sin internet)."
+          fi

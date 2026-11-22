@@ -3,13 +3,9 @@ package com.example.ui.screens
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -44,7 +41,10 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsOff
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.OfflinePin
@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.TurnSharpRight
 import androidx.compose.material.icons.filled.TurnSlightLeft
 import androidx.compose.material.icons.filled.TurnSlightRight
 import androidx.compose.material.icons.filled.UTurnLeft
+import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -92,6 +93,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
@@ -121,6 +123,7 @@ fun MapScreen(
     onPermissionResult: (Boolean) -> Unit,
     onOpenSavedPlaces: () -> Unit,
     onShowSearchSheet: (Boolean) -> Unit,
+    onShowMenuSheet: (Boolean) -> Unit,
     onShowStepsSheet: (Boolean) -> Unit,
     onShowSaveDialog: (Boolean) -> Unit,
     onToggleNightMode: () -> Unit,
@@ -130,12 +133,15 @@ fun MapScreen(
     onUseGpsOrigin: () -> Unit,
     onUseSanSalvadorOrigin: () -> Unit,
     onCenterMyLocation: () -> Unit,
+    onUserPanMap: () -> Unit,
     onSelectProfile: (RouteProfile) -> Unit,
+    onToggleProfile: () -> Unit,
     onCalculateRoute: () -> Unit,
     onStartNavigation: () -> Unit,
     onStopNavigation: () -> Unit,
     onClearRoute: () -> Unit,
     onSavePlace: (String, String, String) -> Unit,
+    onOpenSavedPlace: (SavedPlaceEntity) -> Unit,
     onFocusStep: (Double, Double) -> Unit,
     onPasteIncomingText: (String) -> Unit,
     onRetryInit: () -> Unit,
@@ -163,6 +169,19 @@ fun MapScreen(
         onDismissMessage()
     }
 
+    val homePlace = remember(savedPlaces) {
+        savedPlaces.firstOrNull {
+            it.category.equals("Casa", ignoreCase = true) ||
+                it.name.equals("Casa", ignoreCase = true)
+        }
+    }
+    val workPlace = remember(savedPlaces) {
+        savedPlaces.firstOrNull {
+            it.category.equals("Trabajo", ignoreCase = true) ||
+                it.name.equals("Trabajo", ignoreCase = true)
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { _ ->
@@ -172,7 +191,9 @@ fun MapScreen(
                     MapsforgeMapView(
                         mapFile = init.mapFile,
                         isNightMode = uiState.isNightMode,
-                        gpsPosition = uiState.gpsPosition,
+                        cursorPosition = uiState.cursorPosition,
+                        isFollowingGps = uiState.isFollowingGps,
+                        isNavigating = uiState.isNavigating,
                         manualOrigin = uiState.manualOrigin,
                         destination = uiState.destination,
                         routeResult = uiState.routeResult,
@@ -187,6 +208,7 @@ fun MapScreen(
                             mapCenterLat = lat
                             mapCenterLon = lon
                         },
+                        onUserPanMap = onUserPanMap,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -206,7 +228,7 @@ fun MapScreen(
                 }
             }
 
-            // Crosshair reticle when aiming manually on remote terrain
+            // Crosshair reticle when picking an unmarked location on the map
             if (uiState.isCrosshairMode && uiState.initState is OfflineInitState.Ready) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -214,10 +236,10 @@ fun MapScreen(
                 ) {
                     Surface(
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                         border = androidx.compose.foundation.BorderStroke(
-                            2.dp,
-                            MaterialTheme.colorScheme.tertiary
+                            2.5.dp,
+                            MaterialTheme.colorScheme.primary
                         ),
                         modifier = Modifier.size(48.dp)
                     ) {
@@ -225,7 +247,7 @@ fun MapScreen(
                             Icon(
                                 Icons.Default.GpsFixed,
                                 contentDescription = "Mira de punto",
-                                tint = MaterialTheme.colorScheme.tertiary,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(26.dp)
                             )
                         }
@@ -233,51 +255,108 @@ fun MapScreen(
                 }
             }
 
-            // TOP CHROME: Search / Navigation Banner
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                if (uiState.isNavigating && uiState.routeResult != null) {
-                    val steps = uiState.routeResult.steps
-                    val activeStep = steps.getOrNull(uiState.activeStepIndex) ?: steps.lastOrNull()
-                    NavigationTopBanner(
+            // TOP OVERLAY: Either Waze-style Navigation Banner OR Floating Hamburger Menu + GPS Pill
+            if (uiState.isNavigating && uiState.routeResult != null) {
+                val steps = uiState.routeResult.steps
+                val activeStep = steps.getOrNull(uiState.activeStepIndex) ?: steps.lastOrNull()
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    WazeNavigationTopBanner(
                         step = activeStep,
                         distanceToTurnMeters = uiState.distanceToNextTurnMeters,
                         onStop = onStopNavigation
                     )
-                } else {
-                    TopSearchAndStatusBar(
-                        hasLocationPermission = uiState.hasLocationPermission,
-                        gpsAccuracyMeters = uiState.gpsPosition?.accuracyMeters,
-                        hasManualOrigin = uiState.manualOrigin != null,
-                        onOpenSearch = { onShowSearchSheet(true) },
-                        onPasteClick = {
-                            val clip = clipboard.getText()?.text
-                            if (!clip.isNullOrBlank()) {
-                                onPasteIncomingText(clip)
-                            } else {
-                                onShowSearchSheet(true)
-                            }
-                        },
-                        onOpenSaved = onOpenSavedPlaces,
-                        onRequestLocationPermission = {
-                            locationPermissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION
-                                )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Top-left Waze floating menu button
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        tonalElevation = 6.dp,
+                        shadowElevation = 6.dp,
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        IconButton(
+                            onClick = { onShowMenuSheet(true) },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("waze_menu_button")
+                        ) {
+                            Icon(
+                                Icons.Default.Menu,
+                                contentDescription = "Menú principal",
+                                tint = MaterialTheme.colorScheme.onSurface
                             )
                         }
-                    )
+                    }
+
+                    // Top-right compact GPS + Offline badge
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        tonalElevation = 4.dp,
+                        shadowElevation = 4.dp,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                        modifier = Modifier
+                            .clickable(enabled = !uiState.hasLocationPermission) {
+                                locationPermissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                )
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = when {
+                                    uiState.gpsPosition != null -> Icons.Default.GpsFixed
+                                    !uiState.hasLocationPermission -> Icons.Default.GpsOff
+                                    else -> Icons.Default.OfflinePin
+                                },
+                                contentDescription = null,
+                                tint = when {
+                                    uiState.gpsPosition != null -> MaterialTheme.colorScheme.primary
+                                    !uiState.hasLocationPermission -> MaterialTheme.colorScheme.tertiary
+                                    else -> MaterialTheme.colorScheme.secondary
+                                },
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = when {
+                                    !uiState.hasLocationPermission -> "Activar GPS"
+                                    uiState.manualOrigin != null -> "Inicio manual"
+                                    uiState.gpsPosition != null -> "Offline • GPS ±${uiState.gpsPosition.accuracyMeters.roundToInt()} m"
+                                    else -> "Offline • Buscando GPS"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
                 }
             }
 
-            // RIGHT MAP CONTROLS
+            // RIGHT COMPACT ZOOM & DAY/NIGHT CONTROLS (when map is ready)
             if (uiState.initState is OfflineInitState.Ready) {
                 Column(
                     modifier = Modifier
@@ -286,43 +365,32 @@ fun MapScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    MapControlPillButton(
-                        icon = Icons.Default.MyLocation,
-                        contentDescription = "Centrar en mi GPS",
-                        testTag = "my_location_button",
-                        highlighted = uiState.gpsPosition != null,
-                        onClick = {
-                            if (!uiState.hasLocationPermission) {
-                                locationPermissionLauncher.launch(
-                                    arrayOf(
-                                        Manifest.permission.ACCESS_FINE_LOCATION,
-                                        Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                )
-                            } else {
-                                onCenterMyLocation()
-                            }
-                        }
-                    )
-                    MapControlPillButton(
-                        icon = Icons.Default.AddLocationAlt,
-                        contentDescription = "Fijar punto con mira en el mapa",
-                        testTag = "crosshair_mode_button",
-                        highlighted = uiState.isCrosshairMode,
-                        onClick = onToggleCrosshairMode
-                    )
-                    MapControlPillButton(
-                        icon = if (uiState.isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
-                        contentDescription = "Cambiar mapa día o noche",
-                        testTag = "night_mode_button",
-                        highlighted = uiState.isNightMode,
-                        onClick = onToggleNightMode
-                    )
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = CircleShape,
                         tonalElevation = 6.dp,
-                        shadowElevation = 4.dp,
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                        shadowElevation = 5.dp,
+                        color = if (uiState.isNightMode) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface
+                    ) {
+                        IconButton(
+                            onClick = onToggleNightMode,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("night_mode_button")
+                        ) {
+                            Icon(
+                                imageVector = if (uiState.isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Modo día o noche",
+                                tint = if (uiState.isNightMode) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        tonalElevation = 6.dp,
+                        shadowElevation = 5.dp,
+                        color = MaterialTheme.colorScheme.surface
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             IconButton(
@@ -336,7 +404,7 @@ fun MapScreen(
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = "Acercar mapa")
                             }
-                            HorizontalDivider(modifier = Modifier.width(32.dp))
+                            HorizontalDivider(modifier = Modifier.width(30.dp))
                             IconButton(
                                 onClick = {
                                     zoomDelta = -1
@@ -353,28 +421,127 @@ fun MapScreen(
                 }
             }
 
-            // BOTTOM OVERLAY: Crosshair confirmation OR Route Sheet OR Empty hint
-            Box(
+            // BOTTOM SECTION: Floating Waze controls row + Bottom Sheet
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                contentAlignment = Alignment.BottomCenter
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Floating Waze-style row above the bottom sheet: Left Recenter + Center Blue Vehicle Pill
+                if (uiState.initState is OfflineInitState.Ready && !uiState.isCrosshairMode) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = 600.dp)
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        // Left circular GPS/recenter button (matches Waze bottom-left button)
+                        Surface(
+                            shape = CircleShape,
+                            tonalElevation = 8.dp,
+                            shadowElevation = 6.dp,
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(50.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    if (!uiState.hasLocationPermission) {
+                                        locationPermissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                                Manifest.permission.ACCESS_COARSE_LOCATION
+                                            )
+                                        )
+                                    } else {
+                                        onCenterMyLocation()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("my_location_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (uiState.isFollowingGps) Icons.Default.GpsFixed else Icons.Default.MyLocation,
+                                    contentDescription = "Centrar en mi ubicación",
+                                    tint = if (uiState.isFollowingGps && uiState.gpsPosition != null) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
+                                )
+                            }
+                        }
+
+                        // Center Waze-blue "Vehículo ▾" pill
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            shadowElevation = 6.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .clip(RoundedCornerShape(50))
+                                .clickable(onClick = onToggleProfile)
+                                .minimumInteractiveComponentSize()
+                                .testTag("waze_vehicle_pill")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (uiState.selectedProfile == RouteProfile.CAR) {
+                                        Icons.Default.DirectionsCar
+                                    } else {
+                                        Icons.AutoMirrored.Filled.DirectionsWalk
+                                    },
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (uiState.selectedProfile == RouteProfile.CAR) "Vehículo" else "A pie",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(Modifier.width(2.dp))
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Cambiar modo",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Bottom Sheet Content
                 when {
                     uiState.isCrosshairMode -> {
-                        CrosshairPickerBar(
-                            centerLat = mapCenterLat,
-                            centerLon = mapCenterLon,
-                            onSetDestination = { onSelectDestination(mapCenterLat, mapCenterLon, null) },
-                            onSetOrigin = { onSelectOrigin(mapCenterLat, mapCenterLon, null) },
-                            onCancel = onToggleCrosshairMode
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            CrosshairPickerBar(
+                                centerLat = mapCenterLat,
+                                centerLon = mapCenterLon,
+                                onSetDestination = { onSelectDestination(mapCenterLat, mapCenterLon, null) },
+                                onSetOrigin = { onSelectOrigin(mapCenterLat, mapCenterLon, null) },
+                                onCancel = onToggleCrosshairMode
+                            )
+                        }
                     }
 
                     uiState.destination != null -> {
-                        RouteDestinationPanel(
+                        WazeRouteBottomSheet(
                             uiState = uiState,
                             onSelectProfile = onSelectProfile,
                             onCalculateRoute = onCalculateRoute,
@@ -390,9 +557,27 @@ fun MapScreen(
                     }
 
                     uiState.initState is OfflineInitState.Ready -> {
-                        FirstTimeHintPill(
+                        WazeSearchBottomSheet(
+                            homePlace = homePlace,
+                            workPlace = workPlace,
                             onOpenSearch = { onShowSearchSheet(true) },
-                            onEnableCrosshair = onToggleCrosshairMode
+                            onPasteLinkClick = {
+                                val clip = clipboard.getText()?.text
+                                if (!clip.isNullOrBlank()) {
+                                    onPasteIncomingText(clip)
+                                } else {
+                                    onShowSearchSheet(true)
+                                }
+                            },
+                            onOpenCrosshair = onToggleCrosshairMode,
+                            onOpenSaved = onOpenSavedPlaces,
+                            onShortcutPlaceClick = { place ->
+                                if (place != null) {
+                                    onOpenSavedPlace(place)
+                                } else {
+                                    onShowSearchSheet(true)
+                                }
+                            }
                         )
                     }
                 }
@@ -411,6 +596,27 @@ fun MapScreen(
                 onSelectOrigin(lat, lon, label)
             },
             onUseGpsOrigin = onUseGpsOrigin
+        )
+    }
+
+    if (uiState.showMenuSheet) {
+        WazeMenuBottomSheet(
+            isNightMode = uiState.isNightMode,
+            savedCount = savedPlaces.size,
+            onDismiss = { onShowMenuSheet(false) },
+            onOpenSaved = {
+                onShowMenuSheet(false)
+                onOpenSavedPlaces()
+            },
+            onEnableCrosshair = {
+                onShowMenuSheet(false)
+                onToggleCrosshairMode()
+            },
+            onToggleNightMode = onToggleNightMode,
+            onCenterGps = {
+                onShowMenuSheet(false)
+                onCenterMyLocation()
+            }
         )
     }
 
@@ -433,7 +639,7 @@ fun MapScreen(
                 Text(
                     text = "${MainViewModel.formatDistance(uiState.routeResult.totalDistanceMeters)} • ${MainViewModel.formatDuration(uiState.routeResult.totalTimeMillis)}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(10.dp))
                 LazyColumn(
@@ -509,157 +715,192 @@ fun MapScreen(
 }
 
 @Composable
-private fun TopSearchAndStatusBar(
-    hasLocationPermission: Boolean,
-    gpsAccuracyMeters: Float?,
-    hasManualOrigin: Boolean,
+private fun WazeSearchBottomSheet(
+    homePlace: SavedPlaceEntity?,
+    workPlace: SavedPlaceEntity?,
     onOpenSearch: () -> Unit,
-    onPasteClick: () -> Unit,
+    onPasteLinkClick: () -> Unit,
+    onOpenCrosshair: () -> Unit,
     onOpenSaved: () -> Unit,
-    onRequestLocationPermission: () -> Unit
+    onShortcutPlaceClick: (SavedPlaceEntity?) -> Unit
 ) {
-    Column(
-        modifier = Modifier.widthIn(max = 600.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    Surface(
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        tonalElevation = 10.dp,
+        shadowElevation = 14.dp,
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 600.dp)
     ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = 8.dp,
-            shadowElevation = 6.dp,
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            modifier = Modifier.fillMaxWidth()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp)
+                .padding(top = 10.dp, bottom = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Drag handle pill like Waze
+            Box(
+                modifier = Modifier
+                    .width(42.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.outline)
+            )
+            Spacer(Modifier.height(12.dp))
+
+            // Big rounded "¿Adónde vas?" pill bar
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenSearch)
+                        .minimumInteractiveComponentSize()
+                        .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+                        .testTag("open_search_bar"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = "¿Adónde vas?",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = onPasteLinkClick,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("quick_paste_button")
+                    ) {
+                        Icon(
+                            Icons.Default.ContentPaste,
+                            contentDescription = "Pegar enlace de Google Maps o coordenadas",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Horizontal shortcut cards like Waze's Casa / Trabajo / Guardados row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onOpenSearch)
-                    .minimumInteractiveComponentSize()
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .testTag("open_search_bar"),
-                verticalAlignment = Alignment.CenterVertically
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    Icons.Default.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
+                WazeShortcutCard(
+                    icon = Icons.Default.Home,
+                    title = "Casa",
+                    subtitle = if (homePlace != null) "Ir ahora" else "Definir",
+                    onClick = { onShortcutPlaceClick(homePlace) }
                 )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = "Pegar ubicación, link o buscar…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                WazeShortcutCard(
+                    icon = Icons.Default.Work,
+                    title = "Trabajo",
+                    subtitle = if (workPlace != null) "Ir ahora" else "Definir",
+                    onClick = { onShortcutPlaceClick(workPlace) }
                 )
-                IconButton(
-                    onClick = onPasteClick,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("quick_paste_button")
-                ) {
-                    Icon(
-                        Icons.Default.ContentPaste,
-                        contentDescription = "Pegar coordenadas del portapapeles",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
-                }
-                IconButton(
-                    onClick = onOpenSaved,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("saved_places_button")
-                ) {
-                    Icon(
-                        Icons.Default.Bookmark,
-                        contentDescription = "Lugares guardados",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f),
-                shadowElevation = 2.dp
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.OfflinePin,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        text = "100% OFFLINE • EL SALVADOR",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                }
-            }
-
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = when {
-                    !hasLocationPermission -> MaterialTheme.colorScheme.tertiaryContainer
-                    gpsAccuracyMeters != null -> MaterialTheme.colorScheme.primaryContainer
-                    else -> MaterialTheme.colorScheme.surfaceVariant
-                }.copy(alpha = 0.94f),
-                shadowElevation = 2.dp,
-                modifier = Modifier.clickable(enabled = !hasLocationPermission) {
-                    onRequestLocationPermission()
-                }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = if (gpsAccuracyMeters != null) Icons.Default.GpsFixed else Icons.Default.GpsOff,
-                        contentDescription = null,
-                        tint = if (gpsAccuracyMeters != null) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = when {
-                            !hasLocationPermission -> "Activar GPS"
-                            hasManualOrigin -> "Inicio manual"
-                            gpsAccuracyMeters != null -> "GPS ±${gpsAccuracyMeters.roundToInt()} m"
-                            else -> "Buscando GPS"
-                        },
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
+                WazeShortcutCard(
+                    icon = Icons.Default.ContentPaste,
+                    title = "Link Maps",
+                    subtitle = "Pegar enlace",
+                    highlighted = true,
+                    onClick = onPasteLinkClick
+                )
+                WazeShortcutCard(
+                    icon = Icons.Default.AddLocationAlt,
+                    title = "Fijar pin",
+                    subtitle = "En el mapa",
+                    onClick = onOpenCrosshair
+                )
+                WazeShortcutCard(
+                    icon = Icons.Default.Bookmark,
+                    title = "Guardados",
+                    subtitle = "Mis rutas",
+                    onClick = onOpenSaved
+                )
             }
         }
     }
 }
 
 @Composable
-private fun NavigationTopBanner(
+private fun WazeShortcutCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    highlighted: Boolean = false,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (highlighted) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (highlighted) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WazeNavigationTopBanner(
     step: RouteStep?,
     distanceToTurnMeters: Double,
     onStop: () -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primary
+            containerColor = Color(0xFF1A2230)
         ),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
         modifier = Modifier
             .fillMaxWidth()
             .widthIn(max = 600.dp)
@@ -672,9 +913,9 @@ private fun NavigationTopBanner(
         ) {
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(52.dp)
                     .background(
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.16f),
+                        color = Color(0xFF0099FF),
                         shape = RoundedCornerShape(14.dp)
                     ),
                 contentAlignment = Alignment.Center
@@ -682,40 +923,45 @@ private fun NavigationTopBanner(
                 Icon(
                     imageVector = signToIcon(step?.sign ?: Instruction.CONTINUE_ON_STREET),
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(30.dp)
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = MainViewModel.formatDistance(distanceToTurnMeters),
                     style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onPrimary
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
                 )
                 Text(
                     text = step?.instructionText ?: "Sigue la ruta trazada",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.92f),
+                    color = Color.White.copy(alpha = 0.88f),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             Spacer(Modifier.width(8.dp))
-            FilledTonalButton(
+            IconButton(
                 onClick = onStop,
                 modifier = Modifier
                     .minimumInteractiveComponentSize()
                     .testTag("stop_navigation_banner_button")
             ) {
-                Text("Salir")
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Detener navegación",
+                    tint = Color.White
+                )
             }
         }
     }
 }
 
 @Composable
-private fun RouteDestinationPanel(
+private fun WazeRouteBottomSheet(
     uiState: MainUiState,
     onSelectProfile: (RouteProfile) -> Unit,
     onCalculateRoute: () -> Unit,
@@ -730,16 +976,43 @@ private fun RouteDestinationPanel(
 ) {
     val dest = uiState.destination ?: return
     val route = uiState.routeResult
+    val shownDist = if (uiState.isNavigating && uiState.remainingDistanceMeters > 0) {
+        uiState.remainingDistanceMeters
+    } else {
+        route?.totalDistanceMeters ?: 0.0
+    }
+    val shownTime = if (uiState.isNavigating && uiState.remainingTimeMillis > 0) {
+        uiState.remainingTimeMillis
+    } else {
+        route?.totalTimeMillis ?: 0L
+    }
 
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+    Surface(
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 10.dp,
+        shadowElevation = 14.dp,
         modifier = Modifier
             .fillMaxWidth()
             .widthIn(max = 600.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp)
+                .padding(top = 10.dp, bottom = 16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .width(42.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.outline)
+            )
+            Spacer(Modifier.height(10.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Top
@@ -748,12 +1021,13 @@ private fun RouteDestinationPanel(
                     Text(
                         text = dest.label,
                         style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     if (!dest.nearestRoad.isNullOrBlank()) {
                         Text(
-                            text = "Vía más cercana: ${dest.nearestRoad}",
+                            text = "Cerca de: ${dest.nearestRoad}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.secondary,
                             maxLines = 1,
@@ -788,56 +1062,56 @@ private fun RouteDestinationPanel(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            // Profile selector + Origin selector
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                FilterChip(
-                    selected = uiState.selectedProfile == RouteProfile.CAR,
-                    onClick = { onSelectProfile(RouteProfile.CAR) },
-                    label = { Text("Carro / Moto") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.DirectionsCar,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    modifier = Modifier.testTag("profile_car_chip")
-                )
-                FilterChip(
-                    selected = uiState.selectedProfile == RouteProfile.FOOT,
-                    onClick = { onSelectProfile(RouteProfile.FOOT) },
-                    label = { Text("A pie") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.AutoMirrored.Filled.DirectionsWalk,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    modifier = Modifier.testTag("profile_foot_chip")
-                )
-                Spacer(Modifier.weight(1f))
-                if (uiState.manualOrigin != null) {
-                    TextButton(onClick = onUseGpsOrigin) {
-                        Text("Usar GPS", maxLines = 1)
+            if (!uiState.isNavigating) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = uiState.selectedProfile == RouteProfile.CAR,
+                        onClick = { onSelectProfile(RouteProfile.CAR) },
+                        label = { Text("Carro / Moto") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.DirectionsCar,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("profile_car_chip")
+                    )
+                    FilterChip(
+                        selected = uiState.selectedProfile == RouteProfile.FOOT,
+                        onClick = { onSelectProfile(RouteProfile.FOOT) },
+                        label = { Text("A pie") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.DirectionsWalk,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("profile_foot_chip")
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (uiState.manualOrigin != null) {
+                        TextButton(onClick = onUseGpsOrigin) {
+                            Text("Usar GPS", maxLines = 1)
+                        }
                     }
                 }
             }
 
             if (uiState.isRouting) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
-                    Text("Calculando ruta offline…", style = MaterialTheme.typography.bodyMedium)
+                    Text("Trazando ruta offline…", style = MaterialTheme.typography.bodyMedium)
                 }
             } else if (uiState.routeError != null) {
                 Spacer(Modifier.height(8.dp))
@@ -845,7 +1119,7 @@ private fun RouteDestinationPanel(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.tertiaryContainer
                     ),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -874,13 +1148,14 @@ private fun RouteDestinationPanel(
                 ) {
                     Column {
                         Text(
-                            text = "${MainViewModel.formatDistance(route.totalDistanceMeters)}  •  ${MainViewModel.formatDuration(route.totalTimeMillis)}",
+                            text = "${MainViewModel.formatDuration(shownTime)}  •  ${MainViewModel.formatDistance(shownDist)}",
                             style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
                         if (route.offRoadTailMeters > 25.0) {
                             Text(
-                                text = "Incluye ${route.offRoadTailMeters.roundToInt()} m fuera de camino hasta el pin",
+                                text = "Últimos ${route.offRoadTailMeters.roundToInt()} m fuera de vía hasta el pin",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.tertiary
                             )
@@ -899,8 +1174,9 @@ private fun RouteDestinationPanel(
                     if (uiState.isNavigating) {
                         Button(
                             onClick = onStopNavigation,
+                            shape = RoundedCornerShape(50),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.tertiary
+                                containerColor = MaterialTheme.colorScheme.error
                             ),
                             modifier = Modifier
                                 .weight(1f)
@@ -909,11 +1185,12 @@ private fun RouteDestinationPanel(
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Finalizar guía")
+                            Text("Salir")
                         }
                     } else {
                         Button(
                             onClick = onStartNavigation,
+                            shape = RoundedCornerShape(50),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
@@ -921,12 +1198,13 @@ private fun RouteDestinationPanel(
                         ) {
                             Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Iniciar guía")
+                            Text("Ir ahora")
                         }
                     }
 
                     FilledTonalButton(
                         onClick = onShowSteps,
+                        shape = RoundedCornerShape(50),
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("show_steps_button")
@@ -941,6 +1219,112 @@ private fun RouteDestinationPanel(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WazeMenuBottomSheet(
+    isNightMode: Boolean,
+    savedCount: Int,
+    onDismiss: () -> Unit,
+    onOpenSaved: () -> Unit,
+    onEnableCrosshair: () -> Unit,
+    onToggleNightMode: () -> Unit,
+    onCenterGps: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "RutaSV Offline",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Mapa completo y rutas de El Salvador sin internet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+
+            MenuActionRow(
+                icon = Icons.Default.Bookmark,
+                title = "Lugares guardados ($savedCount)",
+                subtitle = "Casa, trabajo, fincas y destinos offline",
+                onClick = onOpenSaved
+            )
+            MenuActionRow(
+                icon = Icons.Default.AddLocationAlt,
+                title = "Elegir punto en el mapa",
+                subtitle = "Marca cualquier terreno o camino rural con la mira",
+                onClick = onEnableCrosshair
+            )
+            MenuActionRow(
+                icon = Icons.Default.MyLocation,
+                title = "Centrar en mi GPS",
+                subtitle = "Seguir mi posición automáticamente en la ruta",
+                onClick = onCenterGps
+            )
+            MenuActionRow(
+                icon = if (isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                title = if (isNightMode) "Cambiar a mapa de día" else "Cambiar a mapa nocturno",
+                subtitle = "Reduce el brillo para conducir de noche",
+                onClick = onToggleNightMode
+            )
+        }
+    }
+}
+
+@Composable
+private fun MenuActionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .background(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(12.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 @Composable
 private fun CrosshairPickerBar(
     centerLat: Double,
@@ -950,7 +1334,7 @@ private fun CrosshairPickerBar(
     onCancel: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(24.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -964,8 +1348,9 @@ private fun CrosshairPickerBar(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Apunta el centro del mapa al punto",
-                        style = MaterialTheme.typography.titleSmall
+                        text = "Apunta la mira al destino",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = CoordinateParser.formatCoordinates(centerLat, centerLon),
@@ -984,6 +1369,7 @@ private fun CrosshairPickerBar(
             ) {
                 Button(
                     onClick = onSetDestination,
+                    shape = RoundedCornerShape(50),
                     modifier = Modifier
                         .weight(1f)
                         .minimumInteractiveComponentSize()
@@ -995,6 +1381,7 @@ private fun CrosshairPickerBar(
                 }
                 OutlinedButton(
                     onClick = onSetOrigin,
+                    shape = RoundedCornerShape(50),
                     modifier = Modifier
                         .weight(1f)
                         .minimumInteractiveComponentSize()
@@ -1003,86 +1390,6 @@ private fun CrosshairPickerBar(
                     Text("Usar inicio")
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun FirstTimeHintPill(
-    onOpenSearch: () -> Unit,
-    onEnableCrosshair: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 600.dp)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                text = "Mantén presionado cualquier lugar del mapa o pega unas coordenadas de WhatsApp para calcular tu ruta sin internet.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onOpenSearch,
-                    modifier = Modifier
-                        .weight(1f)
-                        .minimumInteractiveComponentSize()
-                        .testTag("hint_paste_button")
-                ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Pegar ubicación")
-                }
-                FilledTonalButton(
-                    onClick = onEnableCrosshair,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("hint_pick_map_button")
-                ) {
-                    Icon(Icons.Default.AddLocationAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Elegir en mapa")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MapControlPillButton(
-    icon: ImageVector,
-    contentDescription: String,
-    testTag: String,
-    highlighted: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        shape = CircleShape,
-        tonalElevation = 6.dp,
-        shadowElevation = 4.dp,
-        color = if (highlighted) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-    ) {
-        IconButton(
-            onClick = onClick,
-            modifier = Modifier
-                .minimumInteractiveComponentSize()
-                .testTag(testTag)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = if (highlighted) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface
-            )
         }
     }
 }
