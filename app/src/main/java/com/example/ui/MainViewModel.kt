@@ -41,7 +41,9 @@ data class CursorDisplayPosition(
     val longitude: Double,
     val bearingDegrees: Float,
     val accuracyMeters: Float,
-    val isSnappedToRoute: Boolean
+    val isSnappedToRoute: Boolean,
+    val nearestSegmentIndex: Int = 0,
+    val distanceAlongRouteMeters: Double = 0.0
 )
 
 data class MainUiState(
@@ -139,8 +141,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 _uiState.update { state ->
                     val route = state.routeResult
+                    val prevCursor = state.cursorPosition
                     val snap = if (route != null) {
-                        RouteGeometry.analyzePositionOnRoute(pos.latitude, pos.longitude, route)
+                        RouteGeometry.analyzePositionOnRoute(
+                            lat = pos.latitude,
+                            lon = pos.longitude,
+                            route = route,
+                            previousSegmentIndex = if (prevCursor?.isSnappedToRoute == true) prevCursor.nearestSegmentIndex else null,
+                            previousProgressMeters = if (prevCursor?.isSnappedToRoute == true) prevCursor.distanceAlongRouteMeters else null
+                        )
                     } else {
                         null
                     }
@@ -155,7 +164,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             else -> state.cursorPosition?.bearingDegrees ?: 0f
                         },
                         accuracyMeters = pos.accuracyMeters,
-                        isSnappedToRoute = snapped
+                        isSnappedToRoute = snapped,
+                        nearestSegmentIndex = snap?.nearestSegmentIndex ?: 0,
+                        distanceAlongRouteMeters = snap?.distanceAlongRouteMeters ?: 0.0
                     )
 
                     val updatedNav = updateNavigationProgress(state.copy(
@@ -243,7 +254,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             longitude = if (snapped) snap.snappedLon else gps.longitude,
                             bearingDegrees = if (snapped) snap.segmentBearingDegrees else (state.cursorPosition?.bearingDegrees ?: gps.bearing),
                             accuracyMeters = gps.accuracyMeters,
-                            isSnappedToRoute = snapped
+                            isSnappedToRoute = snapped,
+                            nearestSegmentIndex = snap.nearestSegmentIndex,
+                            distanceAlongRouteMeters = snap.distanceAlongRouteMeters
                         )
                         state.copy(
                             routeResult = newRoute,
@@ -514,7 +527,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 longitude = if (snapped) snap!!.snappedLon else gps.longitude,
                                 bearingDegrees = if (snapped) snap!!.segmentBearingDegrees else (current.cursorPosition?.bearingDegrees ?: gps.bearing),
                                 accuracyMeters = gps.accuracyMeters,
-                                isSnappedToRoute = snapped
+                                isSnappedToRoute = snapped,
+                                nearestSegmentIndex = snap?.nearestSegmentIndex ?: 0,
+                                distanceAlongRouteMeters = snap?.distanceAlongRouteMeters ?: 0.0
                             )
                         } else current.cursorPosition
 

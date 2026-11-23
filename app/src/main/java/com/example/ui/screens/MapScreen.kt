@@ -179,6 +179,7 @@ fun MapScreen(
                         focusTarget = uiState.mapFocusRequest,
                         zoomCommandNonce = zoomCommandNonce,
                         zoomDelta = zoomDelta,
+                        isCrosshairMode = uiState.isCrosshairMode,
                         onLongPressCoordinate = { lat, lon ->
                             onSelectDestination(lat, lon, null)
                         },

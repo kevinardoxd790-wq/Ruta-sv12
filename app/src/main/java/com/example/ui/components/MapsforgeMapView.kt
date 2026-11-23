@@ -9,6 +9,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
@@ -38,19 +40,22 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.ElSalvadorPlaces
 import com.example.data.local.SavedPlaceEntity
+import com.example.location.OfflineLocationTracker
 import com.example.map.OfflineRouteResult
 import com.example.ui.CursorDisplayPosition
 import com.example.ui.MapFocusTarget
 import com.example.ui.SelectedPoint
+import com.example.util.RouteGeometry
+import kotlinx.coroutines.isActive
 import org.mapsforge.core.graphics.Style
 import org.mapsforge.core.model.LatLong
 import org.mapsforge.core.model.Point
 import org.mapsforge.core.model.Rotation
+import org.mapsforge.core.util.MercatorProjection
 import org.mapsforge.core.util.Parameters
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
 import org.mapsforge.map.android.view.MapView
-import org.mapsforge.map.layer.Layer
 import org.mapsforge.map.layer.cache.TileCache
 import org.mapsforge.map.layer.overlay.Circle
 import org.mapsforge.map.layer.overlay.Marker
@@ -62,7 +67,7 @@ import java.io.File
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.roundToInt
+import kotlin.math.exp
 import kotlin.math.sin
 
 @SuppressLint("ClickableViewAccessibility", "UnusedBoxWithConstraintsScope")
@@ -81,6 +86,7 @@ fun MapsforgeMapView(
     focusTarget: MapFocusTarget?,
     zoomCommandNonce: Int,
     zoomDelta: Int,
+    isCrosshairMode: Boolean = false,
     onLongPressCoordinate: (Double, Double) -> Unit,
     onMapCenterChanged: (Double, Double) -> Unit,
     onUserPanMap: () -> Unit,
@@ -91,13 +97,16 @@ fun MapsforgeMapView(
     val latestLongPress by rememberUpdatedState(onLongPressCoordinate)
     val latestCenterChanged by rememberUpdatedState(onMapCenterChanged)
     val latestUserPan by rememberUpdatedState(onUserPanMap)
+    val latestCrosshair by rememberUpdatedState(isCrosshairMode)
 
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var tileRendererRef by remember { mutableStateOf<TileRendererLayer?>(null) }
     var tileCacheRef by remember { mutableStateOf<TileCache?>(null) }
+    var overlayHolderRef by remember { mutableStateOf<MapOverlayHolder?>(null) }
     var mapViewSize by remember { mutableStateOf(IntSize.Zero) }
     var userRotationOffset by remember { mutableFloatStateOf(0f) }
-    val overlayLayers = remember { mutableListOf<Layer>() }
+
+    val animState = remember { AnimDriveState() }
 
     // Calibrated Waze first-person 3D perspective (smooth, no white gaps):
     val targetTilt = if (is3dPerspective) 22f else 0f
@@ -129,6 +138,17 @@ fun MapsforgeMapView(
         )
     }
 
+    val cumulativeDistances = remember(routeResult) {
+        routeResult?.let { RouteGeometry.computeCumulativeDistances(it.routePoints) } ?: DoubleArray(0)
+    }
+
+    val fallbackRouteBearing = remember(routeResult) {
+        val pts = routeResult?.routePoints
+        if (pts != null && pts.size >= 2) {
+            computeBearingDegrees(pts[0].latitude, pts[0].longitude, pts[1].latitude, pts[1].longitude)
+        } else null
+    }
+
     DisposableEffect(mapFile) {
         onDispose {
             runCatching {
@@ -139,9 +159,10 @@ fun MapsforgeMapView(
         }
     }
 
-    // Night driving filter when night mode toggles
-    LaunchedEffect(isNightMode, mapViewRef) {
+    // Night driving filter and route stroke palette
+    LaunchedEffect(isNightMode, mapViewRef, overlayHolderRef) {
         val mv = mapViewRef ?: return@LaunchedEffect
+        val holder = overlayHolderRef
         if (isNightMode) {
             val nightMatrix = ColorMatrix(
                 floatArrayOf(
@@ -158,38 +179,14 @@ fun MapsforgeMapView(
         } else {
             mv.setLayerType(View.LAYER_TYPE_NONE, null)
         }
-    }
-
-    val fallbackRouteBearing = remember(routeResult) {
-        val pts = routeResult?.routePoints
-        if (pts != null && pts.size >= 2) {
-            computeBearingDegrees(pts[0].latitude, pts[0].longitude, pts[1].latitude, pts[1].longitude)
-        } else null
-    }
-
-    // Keep Mapsforge FrameBuffer centered (0.5f) and rotate map with heading-up bearing + manual gesture rotation offset
-    LaunchedEffect(
-        mapViewRef,
-        mapViewSize,
-        is3dPerspective,
-        isFollowingGps,
-        cursorPosition?.bearingDegrees,
-        fallbackRouteBearing,
-        userRotationOffset
-    ) {
-        val mv = mapViewRef ?: return@LaunchedEffect
-        runCatching {
-            mv.model.mapViewPosition.setMapViewCenterY(0.5f)
+        if (holder != null) {
+            holder.outlinePaint.color = if (isNightMode) 0xFF0F172A.toInt() else 0xFF2E1065.toInt()
+            holder.routePaint.color = if (isNightMode) 0xFF38BDF8.toInt() else 0xFF7C2AE8.toInt()
+            mv.layerManager.redrawLayers()
         }
-        val bearing = cursorPosition?.bearingDegrees ?: fallbackRouteBearing ?: 0f
-        val totalRotation = bearing + userRotationOffset
-        if (mv.width > 0 && mv.height > 0) {
-            mv.rotate(Rotation(-totalRotation, mv.width / 2f, mv.height / 2f))
-        }
-        mv.invalidate()
     }
 
-    // Explicit center/zoom requests (e.g., destination selected, recenter, start navigation)
+    // Explicit center/zoom requests (destination selected, recenter, start navigation)
     LaunchedEffect(focusTarget?.nonce) {
         val target = focusTarget ?: return@LaunchedEffect
         val mv = mapViewRef ?: return@LaunchedEffect
@@ -198,18 +195,6 @@ fun MapsforgeMapView(
             mv.model.mapViewPosition.setZoomLevel(z)
         }
         latestCenterChanged(target.latitude, target.longitude)
-    }
-
-    // Automatically move the map camera with the moving vehicle along the route
-    LaunchedEffect(cursorPosition?.latitude, cursorPosition?.longitude, isFollowingGps, isNavigating) {
-        val mv = mapViewRef ?: return@LaunchedEffect
-        val pos = cursorPosition ?: return@LaunchedEffect
-        if (isFollowingGps) {
-            mv.model.mapViewPosition.animateTo(LatLong(pos.latitude, pos.longitude))
-            if (isNavigating && mv.model.mapViewPosition.zoomLevel < 16) {
-                mv.model.mapViewPosition.setZoomLevel(17.toByte())
-            }
-        }
     }
 
     // Zoom buttons
@@ -221,128 +206,328 @@ fun MapsforgeMapView(
         mv.model.mapViewPosition.setZoomLevel(next)
     }
 
-    // Redraw overlays whenever route/markers/moving cursor change
-    LaunchedEffect(
-        mapViewRef,
-        cursorPosition,
-        manualOrigin,
-        destination,
-        routeResult,
-        savedPlaces,
-        isNightMode
-    ) {
+    // Update static saved places markers only when savedPlaces list changes
+    LaunchedEffect(mapViewRef, overlayHolderRef, savedPlaces) {
         val mv = mapViewRef ?: return@LaunchedEffect
+        val holder = overlayHolderRef ?: return@LaunchedEffect
         val layers = mv.layerManager.layers
 
-        overlayLayers.forEach { layers.remove(it) }
-        overlayLayers.clear()
+        holder.savedPlaceMarkers.forEach { layers.remove(it) }
+        holder.savedPlaceMarkers.clear()
 
-        fun addOverlay(layer: Layer) {
-            overlayLayers.add(layer)
-            layers.add(layer)
-        }
-
-        // 1. Saved places
+        var insertIdx = 1.coerceAtMost(layers.size())
         for (place in savedPlaces) {
-            addOverlay(
-                Marker(
-                    LatLong(place.latitude, place.longitude),
-                    markerBitmaps.saved,
-                    0,
-                    0
-                )
+            val marker = Marker(
+                LatLong(place.latitude, place.longitude),
+                markerBitmaps.saved,
+                0,
+                0
             )
+            holder.savedPlaceMarkers.add(marker)
+            layers.add(insertIdx, marker)
+            insertIdx++
         }
-
-        // 2. Waze signature purple route polyline with crisp dark purple outline
-        if (routeResult != null && routeResult.routePoints.size >= 2) {
-            val outlinePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = if (isNightMode) 0xFF0F172A.toInt() else 0xFF2E1065.toInt()
-                strokeWidth = 22f
-                setStyle(Style.STROKE)
-            }
-            addOverlay(Polyline(outlinePaint, AndroidGraphicFactory.INSTANCE).apply {
-                setPoints(routeResult.routePoints)
-            })
-
-            val routePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = if (isNightMode) 0xFF38BDF8.toInt() else 0xFF7C2AE8.toInt()
-                strokeWidth = 14f
-                setStyle(Style.STROKE)
-            }
-            addOverlay(Polyline(routePaint, AndroidGraphicFactory.INSTANCE).apply {
-                setPoints(routeResult.routePoints)
-            })
-
-            // Off-road dashed amber tail if pin is inside a finca / unpaved terrain
-            if (routeResult.offRoadTailPoints.size >= 2) {
-                val tailPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                    color = 0xFFF59E0B.toInt()
-                    strokeWidth = 9f
-                    setStyle(Style.STROKE)
-                    setDashPathEffect(floatArrayOf(18f, 14f))
-                }
-                addOverlay(Polyline(tailPaint, AndroidGraphicFactory.INSTANCE).apply {
-                    setPoints(routeResult.offRoadTailPoints)
-                })
-            }
-        }
-
-        // 3. Moving straight-up Waze chevron arrow + soft aura
-        if (cursorPosition != null) {
-            val gpsLatLong = LatLong(cursorPosition.latitude, cursorPosition.longitude)
-            val fillPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = 0x220099FF
-                setStyle(Style.FILL)
-            }
-            val strokePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                color = 0x660099FF.toInt()
-                strokeWidth = 2.5f
-                setStyle(Style.STROKE)
-            }
-            addOverlay(
-                Circle(
-                    gpsLatLong,
-                    cursorPosition.accuracyMeters.coerceIn(10f, 100f),
-                    fillPaint,
-                    strokePaint
-                )
-            )
-            addOverlay(
-                Marker(
-                    gpsLatLong,
-                    markerBitmaps.vehicle,
-                    0,
-                    0
-                )
-            )
-        }
-
-        // 4. Manual origin pin
-        if (manualOrigin != null) {
-            addOverlay(
-                Marker(
-                    LatLong(manualOrigin.latitude, manualOrigin.longitude),
-                    markerBitmaps.origin,
-                    0,
-                    -markerBitmaps.origin.height / 2
-                )
-            )
-        }
-
-        // 5. Destination pin
-        if (destination != null) {
-            addOverlay(
-                Marker(
-                    LatLong(destination.latitude, destination.longitude),
-                    markerBitmaps.destination,
-                    0,
-                    -markerBitmaps.destination.height / 2
-                )
-            )
-        }
-
         mv.layerManager.redrawLayers()
+    }
+
+    // Update static pins (origin, destination) and off-road dashed tail only when they change
+    LaunchedEffect(mapViewRef, overlayHolderRef, manualOrigin, destination, routeResult) {
+        val mv = mapViewRef ?: return@LaunchedEffect
+        val holder = overlayHolderRef ?: return@LaunchedEffect
+
+        if (manualOrigin != null) {
+            holder.originMarker.setLatLong(LatLong(manualOrigin.latitude, manualOrigin.longitude))
+            holder.originMarker.isVisible = true
+        } else {
+            holder.originMarker.isVisible = false
+        }
+
+        if (destination != null) {
+            holder.destinationMarker.setLatLong(LatLong(destination.latitude, destination.longitude))
+            holder.destinationMarker.isVisible = true
+        } else {
+            holder.destinationMarker.isVisible = false
+        }
+
+        val tailPts = routeResult?.offRoadTailPoints
+        if (tailPts != null && tailPts.size >= 2) {
+            holder.offRoadTailPolyline.setPoints(tailPts)
+            holder.offRoadTailPolyline.isVisible = true
+        } else {
+            holder.offRoadTailPolyline.setPoints(emptyList())
+            holder.offRoadTailPolyline.isVisible = false
+        }
+
+        // If route changed and no active snapped cursor is driving trimming yet, show full route immediately
+        val currentCursor = cursorPosition
+        if (routeResult != null && routeResult.routePoints.size >= 2) {
+            if (currentCursor == null || !currentCursor.isSnappedToRoute) {
+                holder.outlinePolyline.setPoints(routeResult.routePoints)
+                holder.routePolyline.setPoints(routeResult.routePoints)
+                holder.outlinePolyline.isVisible = true
+                holder.routePolyline.isVisible = true
+            }
+        } else {
+            holder.outlinePolyline.setPoints(emptyList())
+            holder.routePolyline.setPoints(emptyList())
+            holder.outlinePolyline.isVisible = false
+            holder.routePolyline.isVisible = false
+        }
+
+        animState.forceRenderDirty = true
+        mv.layerManager.redrawLayers()
+    }
+
+    // Feed real GPS targets into the 60 fps interpolation engine without snapping/jumping
+    LaunchedEffect(cursorPosition, routeResult) {
+        val pos = cursorPosition ?: return@LaunchedEffect
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        val routeChanged = animState.lastRouteRef !== routeResult
+        val snapped = pos.isSnappedToRoute && routeResult != null && cumulativeDistances.size >= 2
+
+        if (animState.lastFixArrivalNanos != 0L) {
+            val rawDt = (nowNanos - animState.lastFixArrivalNanos)
+                .coerceIn(300_000_000L, 1_400_000_000L)
+            animState.fixDurationNanos = (
+                animState.fixDurationNanos * 0.55 + rawDt * 0.45
+                ).toLong().coerceIn(420_000_000L, 1_250_000_000L)
+        }
+        animState.lastFixArrivalNanos = nowNanos
+
+        val jumpMeters = if (animState.initialized) {
+            OfflineLocationTracker.haversineMeters(
+                animState.currentLat,
+                animState.currentLon,
+                pos.latitude,
+                pos.longitude
+            )
+        } else {
+            Double.MAX_VALUE
+        }
+
+        val shouldHardSnap = !animState.initialized || jumpMeters > 250.0
+
+        animState.lastRouteRef = routeResult
+        animState.accuracyMeters = pos.accuracyMeters
+        animState.isSnapped = snapped
+        animState.segmentStartNanos = nowNanos
+
+        if (shouldHardSnap) {
+            animState.initialized = true
+            animState.currentLat = pos.latitude
+            animState.currentLon = pos.longitude
+            animState.startLat = pos.latitude
+            animState.startLon = pos.longitude
+            animState.targetLat = pos.latitude
+            animState.targetLon = pos.longitude
+            animState.currentProgressMeters = pos.distanceAlongRouteMeters
+            animState.startProgressMeters = pos.distanceAlongRouteMeters
+            animState.targetProgressMeters = pos.distanceAlongRouteMeters
+            animState.currentBearing = pos.bearingDegrees
+            animState.targetBearing = pos.bearingDegrees
+            animState.forceRenderDirty = true
+        } else if (snapped && routeResult != null) {
+            // If a silent reroute swapped the route instance beneath a moving car,
+            // project the current visual car position onto the new route so there is zero visual pop.
+            if (routeChanged) {
+                val reprojected = RouteGeometry.analyzePositionOnRoute(
+                    animState.currentLat,
+                    animState.currentLon,
+                    routeResult
+                )
+                animState.currentProgressMeters = if (reprojected.distanceToRouteMeters <= 45.0) {
+                    reprojected.distanceAlongRouteMeters
+                } else {
+                    pos.distanceAlongRouteMeters
+                }
+            }
+            animState.startProgressMeters = animState.currentProgressMeters
+            animState.targetProgressMeters = maxOf(
+                pos.distanceAlongRouteMeters,
+                animState.currentProgressMeters
+            )
+            animState.targetLat = pos.latitude
+            animState.targetLon = pos.longitude
+            animState.targetBearing = pos.bearingDegrees
+        } else {
+            animState.startLat = animState.currentLat
+            animState.startLon = animState.currentLon
+            animState.targetLat = pos.latitude
+            animState.targetLon = pos.longitude
+            animState.targetBearing = pos.bearingDegrees
+        }
+    }
+
+    // Dedicated 60 fps Choreographer frame loop for fluid vehicle motion, smooth camera/rotation, and Waze tip trimming
+    val latestCursor by rememberUpdatedState(cursorPosition)
+    val latestRoute by rememberUpdatedState(routeResult)
+    val latestCumulative by rememberUpdatedState(cumulativeDistances)
+    val latestFollowing by rememberUpdatedState(isFollowingGps)
+    val latestNavigating by rememberUpdatedState(isNavigating)
+    val latestUserRotation by rememberUpdatedState(userRotationOffset)
+    val latestFallbackBearing by rememberUpdatedState(fallbackRouteBearing)
+
+    LaunchedEffect(mapViewRef, overlayHolderRef, mapViewSize) {
+        val mv = mapViewRef ?: return@LaunchedEffect
+        val holder = overlayHolderRef ?: return@LaunchedEffect
+
+        var prevFrameNanos = 0L
+        var lastRenderedLat = Double.NaN
+        var lastRenderedLon = Double.NaN
+        var lastRenderedBearing = Float.NaN
+        var lastRenderedTrimDist = Double.NaN
+        var lastRenderedUserRot = Float.NaN
+        var lastCursorVisible = false
+
+        while (isActive) {
+            withFrameNanos { frameNanos ->
+                val dtSec = if (prevFrameNanos == 0L) {
+                    0.016f
+                } else {
+                    ((frameNanos - prevFrameNanos) / 1_000_000_000.0).toFloat().coerceIn(0.001f, 0.05f)
+                }
+                prevFrameNanos = frameNanos
+
+                val pos = latestCursor
+                val route = latestRoute
+                val cumDist = latestCumulative
+                val userRot = latestUserRotation
+
+                if (pos == null || !animState.initialized) {
+                    if (lastCursorVisible) {
+                        holder.vehicleMarker.isVisible = false
+                        holder.accuracyCircle.isVisible = false
+                        lastCursorVisible = false
+                        mv.layerManager.redrawLayers()
+                    }
+                    val targetRot = (latestFallbackBearing ?: 0f) + userRot
+                    if (lastRenderedUserRot.isNaN() || abs(shortestAngleDelta(lastRenderedUserRot, targetRot)) > 0.05f) {
+                        lastRenderedUserRot = targetRot
+                        if (mv.width > 0 && mv.height > 0) {
+                            mv.rotate(Rotation(-targetRot, mv.width / 2f, mv.height / 2f))
+                            mv.invalidate()
+                        }
+                    }
+                    return@withFrameNanos
+                }
+
+                // Interpolate smoothly over the measured GPS cadence
+                val elapsedNanos = (SystemClock.elapsedRealtimeNanos() - animState.segmentStartNanos)
+                    .coerceAtLeast(0L)
+                val u = (elapsedNanos.toDouble() / animState.fixDurationNanos.toDouble())
+                    .coerceIn(0.0, 1.0)
+
+                val activeSnapped = animState.isSnapped && route != null && cumDist.size >= 2
+                if (activeSnapped && route != null) {
+                    val nextProgress = animState.startProgressMeters +
+                        (animState.targetProgressMeters - animState.startProgressMeters) * u
+                    animState.currentProgressMeters = nextProgress
+
+                    val sample = RouteGeometry.samplePointAtDistance(
+                        points = route.routePoints,
+                        cumulativeDistances = cumDist,
+                        distanceMeters = nextProgress,
+                        lookAheadMetersForBearing = 8.0
+                    )
+                    animState.currentLat = sample.latitude
+                    animState.currentLon = sample.longitude
+                    animState.targetBearing = sample.bearingDegrees
+                } else {
+                    animState.currentLat = animState.startLat +
+                        (animState.targetLat - animState.startLat) * u
+                    animState.currentLon = animState.startLon +
+                        (animState.targetLon - animState.startLon) * u
+                }
+
+                // Smooth angular damping (shortest 360-degree path)
+                val bearingAlpha = 1f - exp(-dtSec / 0.22f)
+                val bearingDelta = shortestAngleDelta(animState.currentBearing, animState.targetBearing)
+                animState.currentBearing = normalizeDegrees(
+                    animState.currentBearing + bearingDelta * bearingAlpha
+                )
+
+                val totalRotation = animState.currentBearing + userRot
+
+                // Compute exact tip trim distance along the route so polyline vanishes right from the tip of the chevron
+                val trimDistance = if (activeSnapped && cumDist.isNotEmpty()) {
+                    val totalDist = cumDist.last()
+                    val zoom = mv.model.mapViewPosition.zoomLevel
+                    val mapSize = MercatorProjection.getMapSize(zoom, mv.model.displayModel.tileSize)
+                    val groundRes = MercatorProjection.calculateGroundResolution(animState.currentLat, mapSize)
+                    val tipPx = 11.5f * density.density
+                    val rawTipMeters = (tipPx * groundRes).coerceIn(1.2, 42.0)
+                    val remaining = (totalDist - animState.currentProgressMeters).coerceAtLeast(0.0)
+                    val effectiveTipOffset = rawTipMeters.coerceAtMost((remaining - 0.4).coerceAtLeast(0.0))
+                    (animState.currentProgressMeters + effectiveTipOffset).coerceAtMost(totalDist)
+                } else {
+                    -1.0
+                }
+
+                val posChanged = lastRenderedLat.isNaN() ||
+                    abs(animState.currentLat - lastRenderedLat) > 1e-7 ||
+                    abs(animState.currentLon - lastRenderedLon) > 1e-7
+                val rotChanged = lastRenderedBearing.isNaN() ||
+                    abs(shortestAngleDelta(lastRenderedBearing, totalRotation)) > 0.04f
+                val trimChanged = trimDistance >= 0.0 &&
+                    (lastRenderedTrimDist.isNaN() || abs(trimDistance - lastRenderedTrimDist) > 0.15)
+                val needsRedraw = animState.forceRenderDirty || !lastCursorVisible || posChanged || rotChanged || trimChanged
+
+                if (needsRedraw) {
+                    animState.forceRenderDirty = false
+                    lastRenderedLat = animState.currentLat
+                    lastRenderedLon = animState.currentLon
+                    lastRenderedBearing = totalRotation
+                    lastRenderedTrimDist = trimDistance
+                    lastCursorVisible = true
+
+                    val carLatLong = LatLong(animState.currentLat, animState.currentLon)
+                    holder.vehicleMarker.setLatLong(carLatLong)
+                    holder.vehicleMarker.isVisible = true
+
+                    holder.accuracyCircle.setLatLong(carLatLong)
+                    holder.accuracyCircle.setRadius(animState.accuracyMeters.coerceIn(10f, 100f))
+                    holder.accuracyCircle.isVisible = true
+
+                    if (activeSnapped && route != null) {
+                        val remainingPts = RouteGeometry.buildRemainingPolylineFromDistance(
+                            points = route.routePoints,
+                            cumulativeDistances = cumDist,
+                            startDistanceMeters = trimDistance
+                        )
+                        if (remainingPts.size >= 2) {
+                            holder.outlinePolyline.setPoints(remainingPts)
+                            holder.routePolyline.setPoints(remainingPts)
+                            holder.outlinePolyline.isVisible = true
+                            holder.routePolyline.isVisible = true
+                        } else {
+                            holder.outlinePolyline.setPoints(emptyList())
+                            holder.routePolyline.setPoints(emptyList())
+                            holder.outlinePolyline.isVisible = false
+                            holder.routePolyline.isVisible = false
+                        }
+                    } else if (route != null && route.routePoints.size >= 2) {
+                        holder.outlinePolyline.setPoints(route.routePoints)
+                        holder.routePolyline.setPoints(route.routePoints)
+                        holder.outlinePolyline.isVisible = true
+                        holder.routePolyline.isVisible = true
+                    }
+
+                    if (latestFollowing) {
+                        mv.model.mapViewPosition.setCenter(carLatLong)
+                        if (latestNavigating && mv.model.mapViewPosition.zoomLevel < 17) {
+                            mv.model.mapViewPosition.setZoomLevel(17.toByte())
+                        }
+                    }
+
+                    if (mv.width > 0 && mv.height > 0) {
+                        mv.rotate(Rotation(-totalRotation, mv.width / 2f, mv.height / 2f))
+                    }
+
+                    mv.layerManager.redrawLayers()
+                    mv.invalidate()
+                }
+            }
+        }
     }
 
     BoxWithConstraints(
@@ -437,22 +622,158 @@ fun MapsforgeMapView(
                     setXmlRenderTheme(MapsforgeThemes.OSMARENDER)
                 }
 
+                var lastCenterReportMs = 0L
                 mapView.model.mapViewPosition.addObserver {
-                    val center = mapView.model.mapViewPosition.center
-                    mapView.post {
-                        latestCenterChanged(center.latitude, center.longitude)
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (latestCrosshair || nowMs - lastCenterReportMs >= 250L) {
+                        lastCenterReportMs = nowMs
+                        val center = mapView.model.mapViewPosition.center
+                        mapView.post {
+                            latestCenterChanged(center.latitude, center.longitude)
+                        }
                     }
                 }
 
-                mapView.layerManager.layers.add(tileRenderer)
+                // Persistent reusable overlay layers in fixed Z-order
+                val outlinePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                    color = if (isNightMode) 0xFF0F172A.toInt() else 0xFF2E1065.toInt()
+                    strokeWidth = 22f
+                    setStyle(Style.STROKE)
+                }
+                val routePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                    color = if (isNightMode) 0xFF38BDF8.toInt() else 0xFF7C2AE8.toInt()
+                    strokeWidth = 14f
+                    setStyle(Style.STROKE)
+                }
+                val tailPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                    color = 0xFFF59E0B.toInt()
+                    strokeWidth = 9f
+                    setStyle(Style.STROKE)
+                    setDashPathEffect(floatArrayOf(18f, 14f))
+                }
+                val accuracyFillPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                    color = 0x220099FF
+                    setStyle(Style.FILL)
+                }
+                val accuracyStrokePaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                    color = 0x660099FF.toInt()
+                    strokeWidth = 2.5f
+                    setStyle(Style.STROKE)
+                }
+
+                val outlinePolyline = Polyline(outlinePaint, AndroidGraphicFactory.INSTANCE).apply {
+                    isVisible = false
+                }
+                val routePolyline = Polyline(routePaint, AndroidGraphicFactory.INSTANCE).apply {
+                    isVisible = false
+                }
+                val offRoadTailPolyline = Polyline(tailPaint, AndroidGraphicFactory.INSTANCE).apply {
+                    isVisible = false
+                }
+                val accuracyCircle = Circle(
+                    LatLong(0.0, 0.0),
+                    10f,
+                    accuracyFillPaint,
+                    accuracyStrokePaint
+                ).apply {
+                    isVisible = false
+                }
+                val vehicleMarker = Marker(
+                    LatLong(0.0, 0.0),
+                    markerBitmaps.vehicle,
+                    0,
+                    0
+                ).apply {
+                    isVisible = false
+                }
+                val originMarker = Marker(
+                    LatLong(0.0, 0.0),
+                    markerBitmaps.origin,
+                    0,
+                    -markerBitmaps.origin.height / 2
+                ).apply {
+                    isVisible = false
+                }
+                val destinationMarker = Marker(
+                    LatLong(0.0, 0.0),
+                    markerBitmaps.destination,
+                    0,
+                    -markerBitmaps.destination.height / 2
+                ).apply {
+                    isVisible = false
+                }
+
+                val holder = MapOverlayHolder(
+                    outlinePaint = outlinePaint,
+                    routePaint = routePaint,
+                    outlinePolyline = outlinePolyline,
+                    routePolyline = routePolyline,
+                    offRoadTailPolyline = offRoadTailPolyline,
+                    accuracyCircle = accuracyCircle,
+                    vehicleMarker = vehicleMarker,
+                    originMarker = originMarker,
+                    destinationMarker = destinationMarker
+                )
+
+                val layers = mapView.layerManager.layers
+                layers.add(tileRenderer)
+                layers.add(outlinePolyline)
+                layers.add(routePolyline)
+                layers.add(offRoadTailPolyline)
+                layers.add(accuracyCircle)
+                layers.add(vehicleMarker)
+                layers.add(originMarker)
+                layers.add(destinationMarker)
+
                 tileCacheRef = tileCache
                 tileRendererRef = tileRenderer
+                overlayHolderRef = holder
                 mapViewRef = mapView
                 mapView
             }
         )
     }
 }
+
+private class AnimDriveState {
+    var initialized: Boolean = false
+    var lastRouteRef: OfflineRouteResult? = null
+    var forceRenderDirty: Boolean = false
+
+    var startProgressMeters: Double = 0.0
+    var targetProgressMeters: Double = 0.0
+    var currentProgressMeters: Double = 0.0
+
+    var startLat: Double = 0.0
+    var startLon: Double = 0.0
+    var targetLat: Double = 0.0
+    var targetLon: Double = 0.0
+    var currentLat: Double = 0.0
+    var currentLon: Double = 0.0
+
+    var targetBearing: Float = 0f
+    var currentBearing: Float = 0f
+
+    var segmentStartNanos: Long = 0L
+    var fixDurationNanos: Long = 850_000_000L
+    var lastFixArrivalNanos: Long = 0L
+
+    var isSnapped: Boolean = false
+    var accuracyMeters: Float = 15f
+}
+
+private class MapOverlayHolder(
+    val outlinePaint: org.mapsforge.core.graphics.Paint,
+    val routePaint: org.mapsforge.core.graphics.Paint,
+    val outlinePolyline: Polyline,
+    val routePolyline: Polyline,
+    val offRoadTailPolyline: Polyline,
+    val accuracyCircle: Circle,
+    val vehicleMarker: Marker,
+    val originMarker: Marker,
+    val destinationMarker: Marker,
+    val savedPlaceMarkers: MutableList<Marker> = mutableListOf()
+)
 
 private class RotationGestureDetector(private val onRotation: (Float) -> Unit) {
     private var pointerId1 = -1
@@ -513,6 +834,16 @@ private class RotationGestureDetector(private val onRotation: (Float) -> Unit) {
         val y2 = event.getY(i2)
         return Math.toDegrees(atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())).toFloat()
     }
+}
+
+private fun shortestAngleDelta(fromDeg: Float, toDeg: Float): Float {
+    var diff = ((toDeg - fromDeg + 540f) % 360f) - 180f
+    if (diff < -180f) diff += 360f
+    return diff
+}
+
+private fun normalizeDegrees(deg: Float): Float {
+    return ((deg % 360f) + 360f) % 360f
 }
 
 private fun computeBearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {

@@ -93,8 +93,8 @@ object OfflineLocationTracker {
                 if (locationManager.allProviders.contains(provider)) {
                     locationManager.requestLocationUpdates(
                         provider,
-                        1000L,
-                        1f,
+                        500L,
+                        0f,
                         listener,
                         Looper.getMainLooper()
                     )
