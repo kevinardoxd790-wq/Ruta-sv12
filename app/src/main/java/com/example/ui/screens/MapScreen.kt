@@ -118,6 +118,7 @@ fun MapScreen(
     onOpenSavedPlace: (SavedPlaceEntity) -> Unit,
     onFocusStep: (Double, Double) -> Unit,
     onPasteIncomingText: (String) -> Unit,
+    onSearchQueryChanged: (String) -> Unit,
     onRetryInit: () -> Unit,
     onDismissMessage: () -> Unit
 ) {
@@ -693,6 +694,11 @@ fun MapScreen(
     if (uiState.showSearchSheet) {
         LocationInputSheet(
             savedPlaces = savedPlaces,
+            query = uiState.searchQuery,
+            offlineSearchResults = uiState.offlineSearchResults,
+            isIndexingOfflinePlaces = uiState.isIndexingOfflinePlaces,
+            indexedPlacesCount = uiState.indexedPlacesCount,
+            onQueryChanged = onSearchQueryChanged,
             onDismiss = { onShowSearchSheet(false) },
             onSelectDestination = { lat, lon, label ->
                 onSelectDestination(lat, lon, label)

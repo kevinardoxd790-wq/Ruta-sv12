@@ -30,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -52,7 +53,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.ElSalvadorPlaces
+import com.example.data.local.OfflinePlaceFtsEntity
+import com.example.data.local.OfflinePlaceMatch
 import com.example.data.local.SavedPlaceEntity
+import com.example.ui.MainViewModel
 import com.example.ui.theme.AppIcons
 import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
@@ -62,6 +66,11 @@ import com.example.util.GoogleMapsLinkResolver
 @Composable
 fun LocationInputSheet(
     savedPlaces: List<SavedPlaceEntity>,
+    query: String,
+    offlineSearchResults: List<OfflinePlaceMatch>,
+    isIndexingOfflinePlaces: Boolean,
+    indexedPlacesCount: Int,
+    onQueryChanged: (String) -> Unit,
     onDismiss: () -> Unit,
     onSelectDestination: (lat: Double, lon: Double, label: String?) -> Unit,
     onSelectOrigin: (lat: Double, lon: Double, label: String?) -> Unit,
@@ -69,7 +78,6 @@ fun LocationInputSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val clipboard = LocalClipboardManager.current
-    var query by remember { mutableStateOf("") }
     var parseResult by remember { mutableStateOf<CoordinateParseResult>(CoordinateParseResult.Empty) }
 
     LaunchedEffect(query) {
@@ -80,12 +88,12 @@ fun LocationInputSheet(
     }
 
     val filteredSaved = remember(query, savedPlaces) {
-        val q = query.trim().lowercase()
+        val q = OfflinePlaceFtsEntity.normalizeText(query)
         if (q.isEmpty()) savedPlaces.take(5)
         else savedPlaces.filter {
-            it.name.lowercase().contains(q) ||
-                it.notes.lowercase().contains(q) ||
-                it.category.lowercase().contains(q)
+            OfflinePlaceFtsEntity.normalizeText(it.name).contains(q) ||
+                OfflinePlaceFtsEntity.normalizeText(it.notes).contains(q) ||
+                OfflinePlaceFtsEntity.normalizeText(it.category).contains(q)
         }
     }
     val filteredGazetteer = remember(query) {
@@ -109,11 +117,25 @@ fun LocationInputSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "¿Adónde vas?",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "¿Adónde vas?",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = when {
+                            isIndexingOfflinePlaces ->
+                                "Indexando lugares y calles offline ($indexedPlacesCount)…"
+                            indexedPlacesCount > 0 ->
+                                "Búsqueda 100% offline • $indexedPlacesCount lugares y calles"
+                            else ->
+                                "Búsqueda 100% offline de El Salvador"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
@@ -124,23 +146,32 @@ fun LocationInputSheet(
                 }
             }
 
+            if (isIndexingOfflinePlaces) {
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                )
+            }
+
             Spacer(Modifier.height(8.dp))
 
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = onQueryChanged,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("location_input_field"),
                 placeholder = {
-                    Text("Pega enlace de Google Maps, coordenadas o busca un lugar…")
+                    Text("Ej. Torre Futura, Multiplaza, calle, o enlace Maps…")
                 },
                 leadingIcon = {
                     Icon(Icons.Default.Search, contentDescription = null)
                 },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
+                        IconButton(onClick = { onQueryChanged("") }) {
                             Icon(Icons.Default.Close, contentDescription = "Limpiar texto")
                         }
                     }
@@ -160,7 +191,7 @@ fun LocationInputSheet(
                     onClick = {
                         val text = clipboard.getText()?.text
                         if (!text.isNullOrBlank()) {
-                            query = text
+                            onQueryChanged(text)
                         }
                     },
                     modifier = Modifier
@@ -307,7 +338,7 @@ fun LocationInputSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 340.dp),
+                    .heightIn(max = 360.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (filteredSaved.isNotEmpty()) {
@@ -323,6 +354,7 @@ fun LocationInputSheet(
                         PlaceSuggestionRow(
                             title = place.name,
                             subtitle = "${place.category} • ${CoordinateParser.formatCoordinates(place.latitude, place.longitude)}",
+                            distanceLabel = null,
                             isSaved = true,
                             onClick = {
                                 onSelectDestination(place.latitude, place.longitude, place.name)
@@ -332,24 +364,78 @@ fun LocationInputSheet(
                     item { HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp)) }
                 }
 
-                item {
-                    Text(
-                        text = "MUNICIPIOS, PLAYAS Y PUNTOS DE EL SALVADOR",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
-                }
-
-                items(filteredGazetteer, key = { "sv_${it.id}" }) { place ->
-                    PlaceSuggestionRow(
-                        title = place.name,
-                        subtitle = "${place.type} • ${place.department}",
-                        isSaved = false,
-                        onClick = {
-                            onSelectDestination(place.latitude, place.longitude, place.name)
+                if (query.trim().length >= 2) {
+                    item {
+                        Text(
+                            text = "LUGARES Y CALLES EN EL SALVADOR (OFFLINE)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                    if (offlineSearchResults.isNotEmpty()) {
+                        items(
+                            items = offlineSearchResults,
+                            key = { "fts_${it.name}_${it.latitude}_${it.longitude}_${it.category}" }
+                        ) { match ->
+                            val distText = match.distanceMeters?.let { "a ${MainViewModel.formatDistance(it)}" }
+                            PlaceSuggestionRow(
+                                title = match.name,
+                                subtitle = "${match.category} • ${match.subtitle}",
+                                distanceLabel = distText,
+                                isSaved = false,
+                                onClick = {
+                                    onSelectDestination(match.latitude, match.longitude, match.name)
+                                }
+                            )
                         }
-                    )
+                    } else if (filteredGazetteer.isNotEmpty()) {
+                        items(filteredGazetteer, key = { "sv_${it.id}" }) { place ->
+                            PlaceSuggestionRow(
+                                title = place.name,
+                                subtitle = "${place.type} • ${place.department}",
+                                distanceLabel = null,
+                                isSaved = false,
+                                onClick = {
+                                    onSelectDestination(place.latitude, place.longitude, place.name)
+                                }
+                            )
+                        }
+                    } else if (parseResult !is CoordinateParseResult.Success) {
+                        item {
+                            Text(
+                                text = if (isIndexingOfflinePlaces) {
+                                    "Terminando de indexar el mapa offline… intenta de nuevo en unos segundos."
+                                } else {
+                                    "No se encontró ese nombre en el mapa offline. Prueba otro nombre de calle, edificio o pega coordenadas."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "MUNICIPIOS, PLAYAS Y PUNTOS DE EL SALVADOR",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+
+                    items(filteredGazetteer, key = { "sv_${it.id}" }) { place ->
+                        PlaceSuggestionRow(
+                            title = place.name,
+                            subtitle = "${place.type} • ${place.department}",
+                            distanceLabel = null,
+                            isSaved = false,
+                            onClick = {
+                                onSelectDestination(place.latitude, place.longitude, place.name)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -360,6 +446,7 @@ fun LocationInputSheet(
 private fun PlaceSuggestionRow(
     title: String,
     subtitle: String,
+    distanceLabel: String?,
     isSaved: Boolean,
     onClick: () -> Unit
 ) {
@@ -405,6 +492,15 @@ private fun PlaceSuggestionRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (distanceLabel != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = distanceLabel,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }

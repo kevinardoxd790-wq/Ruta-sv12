@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ElSalvadorPlaces
 import com.example.data.local.AppDatabase
+import com.example.data.local.OfflinePlaceMatch
+import com.example.data.local.OfflinePlaceRepository
 import com.example.data.local.SavedPlaceEntity
 import com.example.data.local.SavedPlaceRepository
 import com.example.location.GpsPosition
@@ -18,7 +20,9 @@ import com.example.util.CoordinateParseResult
 import com.example.util.CoordinateParser
 import com.example.util.GoogleMapsLinkResolver
 import com.example.util.RouteGeometry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -72,7 +76,11 @@ data class MainUiState(
     val showRouteOptionsSheet: Boolean = false,
     val showSaveDialog: Boolean = false,
     val pendingMessage: String? = null,
-    val mapFocusRequest: MapFocusTarget? = null
+    val mapFocusRequest: MapFocusTarget? = null,
+    val searchQuery: String = "",
+    val offlineSearchResults: List<OfflinePlaceMatch> = emptyList(),
+    val isIndexingOfflinePlaces: Boolean = false,
+    val indexedPlacesCount: Int = 0
 )
 
 data class MapFocusTarget(
@@ -85,9 +93,9 @@ data class MapFocusTarget(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val mapDataManager = OfflineMapDataManager(application)
-    private val repository = SavedPlaceRepository(
-        AppDatabase.getInstance(application).savedPlaceDao()
-    )
+    private val db = AppDatabase.getInstance(application)
+    private val repository = SavedPlaceRepository(db.savedPlaceDao())
+    private val offlinePlaceRepository = OfflinePlaceRepository(db.offlinePlaceDao())
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -100,6 +108,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var locationJob: Job? = null
     private var rerouteJob: Job? = null
+    private var searchJob: Job? = null
+    private var indexJob: Job? = null
     private var isAutoRerouting: Boolean = false
     private var lastRerouteElapsedMs: Long = 0L
     private var lastRoadLookupElapsedMs: Long = 0L
@@ -117,6 +127,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(initState = progress) }
             }
             _uiState.update { it.copy(initState = result) }
+            if (result is OfflineInitState.Ready) {
+                ensureOfflineSearchIndexBuilt()
+            }
+        }
+    }
+
+    private fun ensureOfflineSearchIndexBuilt() {
+        if (indexJob?.isActive == true) return
+        indexJob = viewModelScope.launch(Dispatchers.IO) {
+            val existingCount = runCatching { offlinePlaceRepository.count() }.getOrDefault(0)
+            if (existingCount > 100) {
+                _uiState.update {
+                    it.copy(isIndexingOfflinePlaces = false, indexedPlacesCount = existingCount)
+                }
+                return@launch
+            }
+            _uiState.update { it.copy(isIndexingOfflinePlaces = true, indexedPlacesCount = existingCount) }
+            runCatching {
+                offlinePlaceRepository.clearAll()
+                val total = mapDataManager.buildOfflineSearchIndex(
+                    onProgress = { _, countSoFar ->
+                        _uiState.update { it.copy(indexedPlacesCount = countSoFar) }
+                    },
+                    onBatch = { batch ->
+                        offlinePlaceRepository.insertBatch(batch)
+                    }
+                )
+                _uiState.update {
+                    it.copy(isIndexingOfflinePlaces = false, indexedPlacesCount = total)
+                }
+                val currentQuery = _uiState.value.searchQuery
+                if (currentQuery.isNotBlank()) {
+                    onSearchQueryChanged(currentQuery)
+                }
+            }.onFailure {
+                _uiState.update { it.copy(isIndexingOfflinePlaces = false) }
+            }
         }
     }
 
@@ -621,7 +668,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSearchSheetVisible(visible: Boolean) {
-        _uiState.update { it.copy(showSearchSheet = visible) }
+        _uiState.update {
+            if (visible) it.copy(showSearchSheet = true)
+            else it.copy(showSearchSheet = false, searchQuery = "", offlineSearchResults = emptyList())
+        }
+    }
+
+    fun onSearchQueryChanged(rawQuery: String) {
+        _uiState.update { it.copy(searchQuery = rawQuery) }
+        searchJob?.cancel()
+        if (rawQuery.trim().length < 2) {
+            _uiState.update { it.copy(offlineSearchResults = emptyList()) }
+            return
+        }
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(80L)
+            val state = _uiState.value
+            val refLat = state.gpsPosition?.latitude
+                ?: state.manualOrigin?.latitude
+                ?: ElSalvadorPlaces.SAN_SALVADOR_LAT
+            val refLon = state.gpsPosition?.longitude
+                ?: state.manualOrigin?.longitude
+                ?: ElSalvadorPlaces.SAN_SALVADOR_LON
+            val matches = runCatching {
+                offlinePlaceRepository.search(
+                    rawQuery = rawQuery,
+                    userLat = refLat,
+                    userLon = refLon,
+                    maxResults = 30
+                )
+            }.getOrDefault(emptyList())
+            _uiState.update { it.copy(offlineSearchResults = matches) }
+        }
     }
 
     fun setMenuSheetVisible(visible: Boolean) {

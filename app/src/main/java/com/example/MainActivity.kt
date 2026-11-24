@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
                             onOpenSavedPlace = viewModel::openSavedPlace,
                             onFocusStep = viewModel::focusOnStep,
                             onPasteIncomingText = viewModel::onIncomingTextOrUri,
+                            onSearchQueryChanged = viewModel::onSearchQueryChanged,
                             onRetryInit = viewModel::initializeOfflineData,
                             onDismissMessage = viewModel::dismissPendingMessage
                         )

@@ -297,6 +297,18 @@ class OfflineMapDataManager(private val context: Context) {
         }
     }
 
+    suspend fun buildOfflineSearchIndex(
+        onProgress: (Float, Int) -> Unit,
+        onBatch: suspend (List<com.example.data.local.OfflinePlaceFtsEntity>) -> Unit
+    ): Int {
+        return OfflinePlaceIndexer.indexFromOfflineAssets(
+            mapFile = readyMapFile,
+            hopper = hopper,
+            onProgress = onProgress,
+            onBatch = onBatch
+        )
+    }
+
     fun close() {
         runCatching { hopper?.close() }
         hopper = null
